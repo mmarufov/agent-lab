@@ -1,6 +1,6 @@
 # Agent Lab
 
-Project brief, October 6, 2026. This describes the intended product and the direction selected in discussion. The repository currently contains starter scaffolding; the behavior and results below are proposed, not implemented or measured.
+Roadmap, originally written October 6, 2026. The repository now implements the local deployment simulation, saved-log retrieval, an eve tool, and infrastructure tests. Live deployment investigation, independent review, and agent comparisons remain planned. The broader product behavior and benchmark results described below are proposals, not measured outcomes. See the [README](README.md) for the runnable checkpoint.
 
 ## The idea
 
@@ -65,7 +65,7 @@ Vercel already discusses [agent evaluations and production-like validation](http
 | Next.js | Experiment reports, progress, and code/state comparisons. |
 | Trusted database | Experiment records and controlled service state. |
 
-A possible later eve adapter would make the workbench useful to agents built with that framework. The first release is independent of unmerged eve proposals.
+The current agent package uses eve and registers the log-retrieval tool. Running and comparing complete investigations is the next milestone. The implementation does not depend on unmerged eve proposals.
 
 Vercel's [intern retrospective](https://vercel.com/blog/inside-the-vercel-intern-experience) provides relevant engineering patterns: Kevin Thomas's measured model-routing experiments, Kavin Valli's sandbox and agent lifecycle work, and Mingchung Xia's consistency mechanisms. Agent Lab combines experiment design, execution infrastructure, and state correctness in a developer-facing product. The interview value would come from explaining those mechanisms and their observed tradeoffs in detail.
 
