@@ -1,27 +1,52 @@
 {
-  "name": "test",
+  "name": "agent-lab",
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --hostname 127.0.0.1",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint src packages scripts my-agent/agent my-agent/test vitest*.config.mts",
+    "typecheck:web": "next typegen && tsc --noEmit",
+    "typecheck": "pnpm typecheck:web && pnpm --filter @agent-lab/contracts --filter @agent-lab/lab --filter my-agent typecheck",
+    "build:agent": "pnpm --filter my-agent build",
+    "db:up": "docker compose up -d --wait postgres",
+    "db:stop": "docker compose stop postgres",
+    "db:migrate": "node --env-file-if-exists=.env.local --import tsx packages/lab/src/cli.ts migrate",
+    "lab": "node --env-file-if-exists=.env.local --import tsx packages/lab/src/cli.ts",
+    "lab:logs": "node --env-file-if-exists=.env.local --import tsx scripts/lab-logs.ts",
+    "test": "node --env-file-if-exists=.env.local node_modules/vitest/vitest.mjs run",
+    "test:api": "node --env-file-if-exists=.env.local --import tsx scripts/smoke-api.ts && node --env-file-if-exists=.env.local node_modules/vitest/vitest.mjs run --config vitest.api.config.mts"
   },
   "dependencies": {
+    "@agent-lab/contracts": "workspace:*",
+    "@agent-lab/lab": "workspace:*",
     "next": "16.3.8",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "server-only": "0.0.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
+    "@types/node": "24.19.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.3.8",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "5.9.3",
+    "tsx": "4.23.15",
+    "vitest": "5.0.3"
   },
-  "packageManager": "pnpm@12.9.1"
+  "packageManager": "pnpm@12.9.1",
+  "engines": {
+    "node": "24.x"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "24.x",
+      "onFail": "download"
+    }
+  }
 }
