@@ -8,6 +8,14 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 <!-- END:nextjs-agent-rules -->
 
+Before planning a substantial feature, adding a dependency or service, or preparing
+a milestone PR, read [docs/PROJECT_DIRECTION.md](docs/PROJECT_DIRECTION.md) and
+apply its direction check. Revisit it when scope becomes unclear; routine edits
+within an agreed step do not need a separate review.
+
+After each completed implementation step, remind the user about a commit/PR
+checkpoint. Commit, push, open a PR, or merge when the user authorizes that action.
+
 Personal teaching notes may exist in the gitignored `docs/SESSION_CONTEXT.md`.
 When that local file exists, apply this instruction:
 

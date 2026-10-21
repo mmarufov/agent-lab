@@ -7,7 +7,9 @@
     ".": "./src/service.ts",
     "./database": "./src/database.ts",
     "./fixtures": "./src/fixtures.ts",
-    "./migrate": "./src/migrate.ts"
+    "./migrate": "./src/migrate.ts",
+    "./runs": "./src/runs.ts",
+    "./reviews": "./src/reviews.ts"
   },
   "scripts": { "typecheck": "tsc --noEmit" },
   "dependencies": {
