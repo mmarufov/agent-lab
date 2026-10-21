@@ -1,6 +1,6 @@
 # Agent Lab
 
-Roadmap, originally written October 6, 2026. The repository now implements the local deployment simulation, saved-log retrieval, an eve tool, and infrastructure tests. Live deployment investigation, independent review, and agent comparisons remain planned. The broader product behavior and benchmark results described below are proposals, not measured outcomes. See the [README](README.md) for the runnable checkpoint.
+Roadmap, originally written October 6, 2026. The repository now implements the local deployment simulation, saved-log retrieval, a live eve investigation CLI, PostgreSQL run records, a deterministic citation checker, and a separate persisted model review. Tests cover infrastructure, persistence, stream handling, evidence matching, and review boundaries. A UI, agent comparisons, and measured reviewer effectiveness remain planned. The broader product behavior and benchmark results described below are proposals, not measured outcomes. See the [README](README.md) for the runnable checkpoint.
 
 ## The idea
 
@@ -65,7 +65,7 @@ Vercel already discusses [agent evaluations and production-like validation](http
 | Next.js | Experiment reports, progress, and code/state comparisons. |
 | Trusted database | Experiment records and controlled service state. |
 
-The current agent package uses eve and registers the log-retrieval tool. Running and comparing complete investigations is the next milestone. The implementation does not depend on unmerged eve proposals.
+The current agent package uses eve and registers the log-retrieval tool. Real model investigations of simulated deployments and their evidence are saved; citation checks can be run without another model call. A separate Gateway request produces an advisory claim review and records its input, configuration, usage, and outcome. Comparing agent versions and measuring assessment accuracy remain future work. The implementation does not depend on unmerged eve proposals.
 
 Vercel's [intern retrospective](https://vercel.com/blog/inside-the-vercel-intern-experience) provides relevant engineering patterns: Kevin Thomas's measured model-routing experiments, Kavin Valli's sandbox and agent lifecycle work, and Mingchung Xia's consistency mechanisms. Agent Lab combines experiment design, execution infrastructure, and state correctness in a developer-facing product. The interview value would come from explaining those mechanisms and their observed tradeoffs in detail.
 

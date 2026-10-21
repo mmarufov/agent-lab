@@ -34,10 +34,12 @@ describe("database migrations", () => {
   it("installs the numbered migrations and safely runs again", async () => {
     await inEmptySchema(async (pool) => {
       await migrate(pool);
-      expect(await versions(pool)).toEqual(["001_deployments", "002_deployment_logs"]);
+      expect(await versions(pool)).toEqual(["001_deployments", "002_deployment_logs", "003_investigation_runs", "004_investigation_reviews"]);
       await migrate(pool);
-      expect(await versions(pool)).toEqual(["001_deployments", "002_deployment_logs"]);
+      expect(await versions(pool)).toEqual(["001_deployments", "002_deployment_logs", "003_investigation_runs", "004_investigation_reviews"]);
       expect((await pool.query("SELECT * FROM lab_deployment_logs")).rows).toEqual([]);
+      expect((await pool.query("SELECT * FROM lab_investigation_runs")).rows).toEqual([]);
+      expect((await pool.query("SELECT * FROM lab_investigation_reviews")).rows).toEqual([]);
     });
   });
 
@@ -61,7 +63,7 @@ describe("database migrations", () => {
 
       // Two callers are also safe: the migration lock serializes them.
       await Promise.all([migrate(pool), migrate(pool)]);
-      expect(await versions(pool)).toEqual(["001_deployments", "002_deployment_logs"]);
+      expect(await versions(pool)).toEqual(["001_deployments", "002_deployment_logs", "003_investigation_runs", "004_investigation_reviews"]);
       const state = await pool.query("SELECT current_deployment_id, revision FROM lab_trials WHERE id = $1", [trialId]);
       expect(state.rows).toEqual([{ current_deployment_id: "B", revision: 7 }]);
       expect((await pool.query("SELECT * FROM lab_deployment_logs")).rows).toEqual([]);
