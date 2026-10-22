@@ -20,3 +20,8 @@ Personal teaching notes may exist in the gitignored `docs/SESSION_CONTEXT.md`.
 When that local file exists, apply this instruction:
 
 At the start of every session and after every context compaction, read docs/SESSION_CONTEXT.md and follow the 'How I like explanations' section.
+
+When the user asks to understand a topic later, add or update its checklist in
+[docs/UNDERSTAND_LATER.md](docs/UNDERSTAND_LATER.md), including relevant source
+files and a concrete walkthrough. Avoid duplicate entries. Mark topics understood
+only when the user confirms; implementation or passing tests is not confirmation.

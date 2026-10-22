@@ -1,5 +1,27 @@
 import { z } from "zod";
 
+export const runListInputSchema = z.object({
+  deploymentId: z.enum(["A", "B", "C"]).optional(),
+  status: z.enum(["running", "completed", "failed", "cancelled"]).optional(),
+  cursor: z.uuid().optional(),
+});
+export const recordIdSchema = z.uuid();
+// Public selectors contain no fixtures or expected answers.
+export const caseIdSchema = z.enum(["missing-config", "healthy-startup", "recovered-startup", "no-logs"]);
+export type CaseId = z.infer<typeof caseIdSchema>;
+export const caseNames: Record<CaseId, string> = {
+  "missing-config": "Missing configuration",
+  "healthy-startup": "Healthy startup",
+  "recovered-startup": "Recovered startup",
+  "no-logs": "No logs",
+};
+export const executionRequestSchema = z.union([
+  z.strictObject({ requestId: z.uuid(), kind: z.literal("investigate"), caseId: caseIdSchema }),
+  z.strictObject({ requestId: z.uuid(), kind: z.literal("investigate"), deploymentId: z.enum(["A", "B", "C"]) }),
+  z.strictObject({ requestId: z.uuid(), kind: z.literal("review"), runId: z.uuid() }),
+]);
+export type ExecutionRequest = z.infer<typeof executionRequestSchema>;
+
 export const getLogsInputSchema = z.strictObject({
   deploymentId: z.string().min(1).max(100),
 });
@@ -16,11 +38,20 @@ export const getLogsOutputSchema = z.object({
 });
 
 // Shape validation is not an evaluation of whether these claims are true.
-export const investigationAnswerSchema = z.strictObject({
+export const investigationAnswerV1Schema = z.strictObject({
   diagnosis: z.string().min(1).describe("What the retrieved evidence supports, or that the cause is undetermined."),
   evidenceIds: z.array(z.string().min(1)).describe("Supporting log IDs actually returned by tools. Use an empty list when no evidence was retrieved."),
   uncertainty: z.string().min(1).describe("What the available evidence does not establish."),
 });
+
+export const investigationOutcomeSchema = z.strictObject({
+  state: z.enum(["failed", "healthy", "recovered", "unknown"]).describe("State established by the supplied logs. Recovery requires earlier failure and later successful startup. Empty logs establish unknown, not health."),
+  cause: z.enum(["missing_configuration", "other", "none", "unknown"]).describe("Cause established by the logs; for recovery, the cause of the earlier failure. None means no observed failure; unknown means insufficient evidence."),
+  configurationKey: z.string().min(1).nullable().describe("Missing configuration variable explicitly identified by the evidence, otherwise null."),
+});
+export const investigationAnswerV2Schema = investigationAnswerV1Schema.extend({ outcome: investigationOutcomeSchema });
+export const investigationAnswerSchema = z.union([investigationAnswerV2Schema, investigationAnswerV1Schema]);
+export type InvestigationOutcome = z.infer<typeof investigationOutcomeSchema>;
 
 // Preserve the complete Eve event, including fields added by its runtime.
 export const investigationEventSchema = z.looseObject({

@@ -130,3 +130,15 @@ it("requests server-side cancellation when the deadline expires during a stream"
   await expect(investigate({ host, deploymentId: "B", signal: AbortSignal.timeout(100) })).rejects.toThrow();
   expect(requests.some((item) => item.path.endsWith("/cancel"))).toBe(true);
 });
+
+it("requests and validates v2 without including case names, fixtures, or expected values in the model request", async () => {
+  const structured = { ...answer, outcome: { state: "failed", cause: "missing_configuration", configurationKey: "DATABASE_URL" } };
+  events = events.map((item) => item.type === "result.completed" ? event({ type: "result.completed", data: { ...coordinates, result: structured } }) : item);
+  const result = await investigate({ host, deploymentId: "B", resultSchemaVersion: 2, signal: AbortSignal.timeout(3_000) });
+  expect(result.answer).toEqual(structured);
+  expect(requests[0]).toMatchObject({ body: { outputSchema: { required: ["diagnosis", "evidenceIds", "uncertainty", "outcome"] } } });
+  expect(JSON.stringify(requests[0].body)).not.toMatch(/DATABASE_URL|missing-config|healthy-startup|recovered-startup|no-logs|decisiveEvidenceIds|expected/);
+});
+it("rejects a legacy answer when the caller requires v2", async () => {
+  await expect(investigate({ host, deploymentId: "B", resultSchemaVersion: 2, signal: AbortSignal.timeout(3_000) })).rejects.toThrow(/invalid structured answer/);
+});

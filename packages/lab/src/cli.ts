@@ -3,6 +3,7 @@ import { createTrial } from "./fixtures";
 import { migrate } from "./migrate";
 import { createLab } from "./service";
 import { createRunStore } from "./runs";
+import { unassessedOutcome } from "./outcome";
 import { evaluateRun } from "./evaluate";
 import { createReviewStore } from "./reviews";
 
@@ -65,10 +66,14 @@ try {
   } else if ((command === "run" || command === "evaluate") && trialId && extra.length === 0 && (format === undefined || format === "--json")) {
     const run = await createRunStore(pool).get(trialId);
     if (command === "evaluate") {
-      const report = evaluateRun(run);
+      const report = { ...evaluateRun(run), outcome: run.outcomeReport ?? unassessedOutcome() };
       if (format === "--json") console.log(JSON.stringify(report, null, 2));
-      else printEvaluation(report);
-      if (Object.values(report.checks).some((result) => result.status === "fail")) process.exitCode = 1;
+      else {
+        printEvaluation(report);
+        console.log(`Outcome ${report.outcome.status.toUpperCase()}: ${report.outcome.reasons.join(" ")}`);
+        if (report.outcome.expected) console.log(`Expected: ${JSON.stringify(report.outcome.expected)}\nObserved: ${JSON.stringify(report.outcome.observed)}`);
+      }
+      if (report.outcome.status === "fail" || Object.values(report.checks).some((result) => result.status === "fail")) process.exitCode = 1;
       else if (report.checks.execution.status === "not_evaluated") process.exitCode = 2;
     } else {
       if (format === "--json") console.log(JSON.stringify(run, null, 2));

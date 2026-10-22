@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { Client, type MessageStreamEvent, type SessionWaitingStreamEvent } from "eve/client";
-import { getLogsInputSchema, investigationAnswerSchema, type InvestigationAnswer } from "@agent-lab/contracts";
+import { getLogsInputSchema, investigationAnswerV1Schema, investigationAnswerV2Schema, type InvestigationAnswer } from "@agent-lab/contracts";
 import type { GetLogsConfig } from "../agent/lib/get-logs";
 
 export type { MessageStreamEvent } from "eve/client";
@@ -90,14 +90,16 @@ export function investigationTask(deploymentId: string) {
 export async function investigate(options: {
   host: string;
   deploymentId: string;
+  resultSchemaVersion?: 1 | 2;
   signal: AbortSignal;
   onSession?: (sessionId: string) => void | Promise<void>;
   onEvent?: (event: MessageStreamEvent) => void | Promise<void>;
 }) {
+  const answerSchema = options.resultSchemaVersion === 2 ? investigationAnswerV2Schema : investigationAnswerV1Schema;
   const client = new Client({ host: options.host, redirect: "error" });
   const { session, response } = await client.sessions.create({
     message: investigationTask(options.deploymentId),
-    outputSchema: investigationAnswerSchema,
+    outputSchema: answerSchema,
     signal: options.signal,
   });
   const events: MessageStreamEvent[] = [];
@@ -119,7 +121,7 @@ export async function investigate(options: {
       }
       if (event.type === "message.completed" && event.data.finishReason !== "tool-calls") message = event.data.message;
       if (event.type === "result.completed") {
-        const parsed = investigationAnswerSchema.safeParse(event.data.result);
+        const parsed = answerSchema.safeParse(event.data.result);
         if (!parsed.success) throw new Error("Eve returned an invalid structured answer.");
         answer = parsed.data;
       }
