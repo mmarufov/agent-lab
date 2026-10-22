@@ -6,10 +6,14 @@
   "exports": {
     ".": "./src/service.ts",
     "./database": "./src/database.ts",
+    "./cases": "./src/cases.ts",
     "./fixtures": "./src/fixtures.ts",
     "./migrate": "./src/migrate.ts",
     "./runs": "./src/runs.ts",
-    "./reviews": "./src/reviews.ts"
+    "./reviews": "./src/reviews.ts",
+    "./web": "./src/web.ts",
+    "./jobs": "./src/jobs.ts",
+    "./stream": "./src/stream.ts"
   },
   "scripts": { "typecheck": "tsc --noEmit" },
   "dependencies": {

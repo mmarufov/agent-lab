@@ -1,7 +1,8 @@
 # Agent Lab demo roadmap
 
 Written October 20, 2026. Target: tomorrow evening, October 21 in the user's
-local time. Steps 1 and 2 are implemented locally; the remaining steps are proposed work.
+local time. Updated October 21: steps 1, 2, and 3 are implemented locally;
+comparison and recording remain proposed work.
 Follow [PROJECT_DIRECTION.md](PROJECT_DIRECTION.md) for the project's purpose.
 
 ## The demo we want
@@ -44,7 +45,15 @@ improvement before measuring one or weaken the baseline to manufacture it.
   94 tests, types, lint, both builds, one saved B review, and one clearly labeled
   deliberately wrong answer rejected in a separate live control. These two model
   observations do not establish reviewer accuracy or an agent improvement.
-- There is no comparison UI or app repair loop.
+- The local workbench runs at `/runs`, with a single investigation/review page,
+  live activity that stays open on completion, linked evidence, review history,
+  real model actions, cancellation, and SSE refresh/reconnection.
+  `pnpm dev:lab` starts Next.js and the local worker. Latest UI verification:
+  111 unit/integration tests, 10 API tests, 12 browser tests, types, lint,
+  both builds, and one fresh B investigation plus one review.
+  Their combined reported model cost was $0.0060216. These remain simulation
+  observations, not a benchmark of diagnosis quality.
+- There is no agent-version comparison UI or app repair loop.
 
 ## Build order and visible results
 
@@ -52,7 +61,7 @@ improvement before measuring one or weaken the baseline to manufacture it.
 | --- | --- | --- |
 | 1. Evidence checker (implemented locally) | `packages/lab/src/evaluate.ts`, tests, and `pnpm lab evaluate <run-id|latest> [--json]`. | Made-up and unreceived citations fail in tests; the saved B record's three returned IDs pass; missing/failed retrieval is visible. |
 | 2. Separate AI review (implemented locally) | A fresh Gateway request receives the task, answer, and received logs; `review-v1` returns claim judgments and missing evidence. | Review input/configuration/checks, errors, and usage are saved separately and reopenable. |
-| 3. Small working UI | Use the existing Next.js app to select a case and show the run timeline, returned log rows, answer, objective checks, and AI review. | A real run updates the screen and can be reopened after refresh; clicking a citation reveals its recorded evidence. |
+| 3. Small working UI (implemented locally) | Use the existing Next.js app to select a case and show the run timeline, returned log rows, answer, objective checks, and AI review. | A real run updates the screen and can be reopened after refresh; clicking a citation reveals its recorded evidence. |
 | 4. One candidate and comparison | Propose one instruction revision from development evidence; show its diff, run the candidate separately, and compare with the current baseline. | Both versions retain their own source hashes, runs, checks, reviews, and costs; failures and regressions remain visible. |
 | 5. Rehearse and record | Freeze working features, run the demonstration, and record a concise video. | The user can explain each actor and reproduce the shown result. |
 
@@ -91,12 +100,17 @@ was tested. Keep these separate:
 For example, an answer can cite the real `log-17` and still wrongly claim that it
 proved a network outage. Step 1 detects missing/fabricated evidence; semantic
 support needs its own assessment. For known cases, keep expected outcomes outside
-the investigator's prompt/tool results. A later structured outcome field may make
-case checks more precise; do not use loose substring matching as proof of truth.
+the investigator's prompt/tool results. Version-two case answers now carry structured state, cause, and configuration
+claims. `outcome-v1` compares those values and requires retrieved decisive
+citations; it does not grade prose by substring matching. Migration 006 saves an
+immutable case snapshot and atomically saves the completed answer and outcome
+report. Legacy runs remain unassessed. Reopening reads the saved assessment.
 
-Start with a CLI report. Add a numbered migration for persisted evaluations when
-the report contract is clear. Store evaluator version and run ID; do not overwrite
-the original events or answer while evaluating them.
+The four development cases are `missing-config`, `healthy-startup`,
+`recovered-startup`, and `no-logs`. They all target B and use the same task;
+expected answers remain outside investigator and reviewer requests. The [first live baseline](CASE_BASELINE.md) records one run per case plus one separate review, including reported costs and limitations. The web
+launch dialog and `pnpm lab:investigate --case <id>` run one selected case at a
+time. A candidate generator, reserved cases, and version comparisons remain next.
 
 ### Step 2: reviewer boundary and reuse
 
@@ -133,16 +147,123 @@ usage separately from the investigator's.
 
 ### Step 3: UI and execution scope
 
+Implemented October 21: a light-first Geist interface with dark mode, runs table,
+URL-based filters, linked evidence, independent checks, and review attempts on
+one page. Compact shadcn Trace/Collapsible steps show live activity in a resizable
+desktop panel, or below the task on phones. Following the user's latest clarification,
+the panel stays open after completion and closes only on request. Only steps with
+inspectable details expand. Evidence checks and the independent review result
+remain below the answer on the left; Review answer stays in the activity panel. View activity and
+citations reopen a closed panel. Phones retain the evidence drawer. Legacy trace/review links select
+the relevant section. Tokens, costs, and IDs live in expandable details.
+Review judgments do not replace deterministic checks.
+
+Migration 005 stores local execution jobs and worker heartbeats. Next.js admits
+same-origin commands; a separate Node worker invokes the shared CLI investigation
+and review functions. PostgreSQL locks serialize model execution, duplicate
+request IDs reuse their operation, and interrupted browser jobs are reconciled
+without automatic model replay. Before a run exists, the browser watches its
+queued job. The detail page then uses one SSE connection: the server reads saved
+state once per second and transmits changed display snapshots. Connections close
+when hidden, unmounted, or settled; reconnects read the latest saved state.
+The browser never receives runtime credentials or source settings.
+`LAB_LOCAL_EXECUTION=0` disables model actions. Hosted access remains deferred.
+
+
 Reuse the current TypeScript, Next.js, Eve, Gateway, PostgreSQL, pg, Zod, and Vitest
 stack. Read installed Next.js/Eve guides before implementation. No new database,
 vector store, deployment platform, or general workflow engine is needed here.
+
+#### Design and structure researched October 21
+
+The user wants a professional developer-tool interface with Vercel's visual feel
+and a foundation we can extend. Start with the actual saved investigation and
+review records. The UI must help someone follow an answer back to the returned
+evidence; appearance alone does not establish investigation or reviewer quality.
+
+Use Geist Sans for interface text and Geist Mono for IDs, code, and numeric
+metadata. Define reusable semantic color, spacing, border, radius, and typography
+tokens in `src/app/globals.css`, with light/dark values. Favor quiet neutral
+surfaces, thin borders, compact readable tables, and restrained status colors.
+Load fonts through Next.js/local font support. Add only the shadcn/ui primitives
+needed for real controls; implement run/evidence/review components around our
+existing contracts. Do not install a broad dashboard starter or an entire
+upstream observability application.
+
+The proposed screens and interactions:
+
+- A compact runs table with case, execution status, model, date, duration, and
+  reported cost. Separate missing values from actual zero values.
+- A stable `/runs/[runId]` detail URL with an overview, trace, and review. Clicking
+  an evidence citation reveals the matching recorded tool result, including its
+  call ID. Keep TypeScript checks and the model review visibly distinct.
+- A desktop evidence inspector beside the answer; stack content on narrow
+  screens. Use keyboard-operable controls, visible focus, text labels for status,
+  and deliberate loading, empty, failed, and cancelled states.
+- URL-addressed selection/tabs where useful; refresh must reopen saved data.
+  Add Run Investigation and Review actions after the saved-run view works.
+  Label simulations, saved executions, and live activity accurately.
+
+Proposed ownership, creating files only when the corresponding feature needs them:
+
+| Location | Responsibility |
+| --- | --- |
+| `src/app/layout.tsx`, `src/app/globals.css` | Fonts, shared page shell, design tokens. |
+| `src/app/runs/page.tsx` | Recent saved runs. |
+| `src/app/runs/[runId]/page.tsx` | Load and display one saved investigation. |
+| `src/components/ui/` | Small reusable controls. |
+| `src/components/runs/` | Run table, trace, evidence inspector, review display. |
+| `src/lib/server/` | Server-only data loaders and explicit browser-safe fields. |
+| `packages/lab/`, `my-agent/client/` | Existing SQL, checks, review and execution logic. |
+
+Server-side page code can call the existing stores directly; do not add an HTTP
+hop solely for a Server Component to read our own database. Add browser-facing
+endpoints when polling or actions require them. Keep credentials and raw runtime
+configuration out of browser data. Add run listing and reviews-by-run reads to
+the existing stores rather than importing a CLI entry point into the page.
+
+References inspected:
+
+- [Geist typography](https://vercel.com/geist/typography),
+  [colors](https://vercel.com/geist/colors),
+  [materials](https://vercel.com/geist/materials), and
+  [Web Interface Guidelines](https://vercel.com/design/guidelines).
+- Workflow's public [runs table](https://github.com/vercel/workflow/blob/6455bebd7dbc18e08fce5e3dede6df6ac4d7d7ff/packages/web/app/components/runs-table.tsx)
+  and [run detail composition](https://github.com/vercel/workflow/blob/6455bebd7dbc18e08fce5e3dede6df6ac4d7d7ff/packages/web/app/components/run-detail-view.tsx).
+  Its web app uses React Router/Vite; reuse the component boundaries while keeping
+  our installed Next.js app. Its shared UI package has Workflow-specific coupling.
+- [Geist fonts](https://github.com/vercel/geist-font) and
+  [shadcn/ui theming](https://ui.shadcn.com/docs/theming) provide public building
+  blocks. The Geist table example imports `@vercel/geistcn/components`; that
+  package returned 404 from the public npm registry when checked. Do not assume
+  it is an installable public equivalent to Vercel's internal UI.
+- [AI Elements](https://github.com/vercel/ai-elements/tree/ca8be600bfd01b3131f9bf6134b51602a71f4374) announces a move to shadcn/ui and
+  deprecation of that repository in November 2026. Check the current component
+  source before adopting it; its tool components expect AI SDK message shapes,
+  whereas our saved trace uses Eve events.
+
+#### Local first, with a supported hosting path
+
+The first complete UI runs at `http://127.0.0.1:3000`. Vercel hosting is the next
+deployment target, not an already configured or verified capability. Local and
+hosted execution should use the same display components and saved-run contracts.
+
+Installed Eve 0.71.0 documents `withEve` from `eve/next`. Its `eveRoot` option can
+point at `./my-agent`; Next.js and Eve can run together locally and deploy as one
+Vercel project with separate services. See
+`my-agent/node_modules/eve/docs/guides/frontend/nextjs.mdx` and the
+[public deployment guide](https://github.com/vercel/eve/blob/main/docs/guides/deployment/vercel.mdx).
+This integration has not been added or tested in our app. Hosted execution also
+needs reachable PostgreSQL, authenticated run access, bounded model spending, and
+trial credentials scoped to the correct session. Uploading the Next.js app alone
+does not move our Mac's Docker database or CLI process supervisor to the cloud.
 
 Extract the CLI's orchestration into reusable code before wiring a Run button.
 Keep one active local investigation at a time with an explicit busy response.
 Supervise the owned Eve process and keep credentials in the server process;
 never mutate a shared Eve server's global trial token between browser requests.
-The browser can poll saved run state/events; it must not depend on receiving the
-one original stream to display a completed run after refresh.
+The browser reads saved state through SSE; it does not depend on receiving the
+one original Eve stream to display a completed run after refresh.
 
 The first recording can use a local browser and local Node processes. This does
 not establish that the current long-running supervisor works in a hosted

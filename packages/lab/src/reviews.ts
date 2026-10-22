@@ -6,6 +6,7 @@ import {
 } from "@agent-lab/contracts";
 import { evaluateRun } from "./evaluate";
 import { createRunStore } from "./runs";
+import { transaction } from "./database";
 
 interface ReviewRow {
   id: string;
@@ -26,7 +27,7 @@ interface ReviewRow {
 // Trusted controller access. No reviewer write tool or public endpoint.
 export function createReviewStore(pool: Pool) {
   const store = {
-    async start(runId: string, rawConfiguration: ReviewConfig) {
+    async start(runId: string, rawConfiguration: ReviewConfig, jobId?: string) {
       const configuration = reviewConfigSchema.parse(rawConfiguration);
       const run = await createRunStore(pool).get(runId);
       const evidenceCheck = evaluateRun(run);
@@ -43,11 +44,17 @@ export function createReviewStore(pool: Pool) {
       }
       const id = randomUUID();
       const hash = createHash("sha256").update(configuration.system).digest("hex");
-      await pool.query(
-        `INSERT INTO lab_investigation_reviews (id, run_id, configuration, prompt_sha256, input, evidence_check)
-         VALUES ($1, $2, $3::jsonb, $4, $5::jsonb, $6::jsonb)`,
-        [id, run.id, JSON.stringify(configuration), hash, JSON.stringify(input), JSON.stringify(evidenceCheck)],
-      );
+      await transaction(pool, async (client) => {
+        await client.query(
+          `INSERT INTO lab_investigation_reviews (id, run_id, configuration, prompt_sha256, input, evidence_check)
+           VALUES ($1, $2, $3::jsonb, $4, $5::jsonb, $6::jsonb)`,
+          [id, run.id, JSON.stringify(configuration), hash, JSON.stringify(input), JSON.stringify(evidenceCheck)],
+        );
+        if (jobId) {
+          const linked = await client.query("UPDATE lab_execution_jobs SET review_id = $2 WHERE id = $1 AND kind = 'review' AND status = 'running' AND run_id = $3 AND review_id IS NULL", [jobId, id, run.id]);
+          if (linked.rowCount !== 1) throw new Error("Cannot attach this review to its operation.");
+        }
+      });
       return { id, input };
     },
 
@@ -114,11 +121,11 @@ export async function reviewSavedRun(
   runId: string,
   configuration: ReviewConfig,
   generate: (input: ReviewInput, options: ReviewRequestOptions) => Promise<unknown>,
-  options: { signal?: AbortSignal; onCreated?: (id: string) => void } = {},
+  options: { signal?: AbortSignal; onCreated?: (id: string) => void; jobId?: string } = {},
 ) {
   options.signal?.throwIfAborted();
   const store = createReviewStore(pool);
-  const { id, input } = await store.start(runId, configuration);
+  const { id, input } = await store.start(runId, configuration, options.jobId);
   try {
     options.onCreated?.(id);
     options.signal?.throwIfAborted();

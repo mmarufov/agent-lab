@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Pool } from "pg";
-import { investigationAnswerSchema, investigationEventSchema, type InvestigationAnswer, type InvestigationEvent } from "@agent-lab/contracts";
+import { investigationAnswerSchema, investigationAnswerV2Schema, investigationEventSchema, type InvestigationAnswer, type InvestigationEvent } from "@agent-lab/contracts";
 import { transaction } from "./database";
+import type { CaseSnapshot } from "./cases";
+import { evaluateOutcome, type OutcomeReport } from "./outcome";
 
 type RunStatus = "running" | "completed" | "failed" | "cancelled";
 interface RunRow {
@@ -13,6 +15,10 @@ interface RunRow {
   instructionsHash: string;
   agentConfigSource: string;
   resultSchemaVersion: number;
+  caseId: string | null;
+  caseVersion: number | null;
+  caseSnapshot: CaseSnapshot | null;
+  outcomeReport: OutcomeReport | null;
   sessionId: string | null;
   modelId: string | null;
   status: RunStatus;
@@ -35,15 +41,24 @@ export function createRunStore(pool: Pool) {
       task: string;
       instructions: string;
       agentConfigSource: string;
-    }) {
+      caseSnapshot?: CaseSnapshot | null;
+    }, jobId?: string) {
+      const snapshot = input.caseSnapshot;
+      if (snapshot && (snapshot.trialId !== input.trialId || snapshot.deploymentId !== input.deploymentId)) throw new Error("Case snapshot belongs to a different trial or deployment.");
       const id = randomUUID();
       const hash = createHash("sha256").update(input.instructions).digest("hex");
-      await pool.query(
-        `INSERT INTO lab_investigation_runs
-           (id, trial_id, deployment_id, task, instructions, instructions_sha256, agent_config_source)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [id, input.trialId, input.deploymentId, input.task, input.instructions, hash, input.agentConfigSource],
-      );
+      await transaction(pool, async (client) => {
+        await client.query(
+          `INSERT INTO lab_investigation_runs
+             (id, trial_id, deployment_id, task, instructions, instructions_sha256, agent_config_source, result_schema_version, case_id, case_version, case_snapshot)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)`,
+          [id, input.trialId, input.deploymentId, input.task, input.instructions, hash, input.agentConfigSource, snapshot ? 2 : 1, snapshot?.id ?? null, snapshot?.version ?? null, snapshot ? JSON.stringify(snapshot) : null],
+        );
+        if (jobId) {
+          const linked = await client.query("UPDATE lab_execution_jobs SET run_id = $2 WHERE id = $1 AND kind = 'investigate' AND status = 'running' AND run_id IS NULL", [jobId, id]);
+          if (linked.rowCount !== 1) throw new Error("Cannot attach this investigation to its operation.");
+        }
+      });
       return id;
     },
 
@@ -92,16 +107,24 @@ export function createRunStore(pool: Pool) {
       | { status: "completed"; answer: InvestigationAnswer; message: string }
       | { status: "failed" | "cancelled"; error: string }
     ) {
-      const answer = outcome.status === "completed" ? investigationAnswerSchema.parse(outcome.answer) : null;
-      const result = await pool.query(
-        `UPDATE lab_investigation_runs
-         SET status = $2, finished_at = clock_timestamp(), answer = $3::jsonb, assistant_message = $4, error = $5
-         WHERE id = $1 AND status = 'running'`,
-        [runId, outcome.status, answer ? JSON.stringify(answer) : null,
-          outcome.status === "completed" ? outcome.message : null,
-          outcome.status === "completed" ? null : outcome.error],
-      );
-      if (result.rowCount !== 1) throw new Error("Investigation run is missing or already finished.");
+      await transaction(pool, async (client) => {
+        // This row lock also serializes appendEvent, so the assessment and answer
+        // share exactly the same trace and become visible in one commit.
+        const selected = await client.query<Pick<RunRow, "id" | "trialId" | "deploymentId" | "status" | "caseSnapshot">>(
+          `SELECT id, trial_id AS "trialId", deployment_id AS "deploymentId", status, case_snapshot AS "caseSnapshot"
+           FROM lab_investigation_runs WHERE id = $1 FOR UPDATE`, [runId]);
+        const run = selected.rows[0];
+        if (!run || run.status !== "running") throw new Error("Investigation run is missing or already finished.");
+        const answer = outcome.status === "completed"
+          ? (run.caseSnapshot ? investigationAnswerV2Schema : investigationAnswerSchema).parse(outcome.answer) : null;
+        const events = await client.query<{ payload: InvestigationEvent }>("SELECT payload FROM lab_investigation_events WHERE run_id = $1 ORDER BY sequence", [runId]);
+        const report = run.caseSnapshot ? evaluateOutcome({ ...run, status: outcome.status, answer, events: events.rows.map((row) => row.payload) }) : null;
+        await client.query(
+          `UPDATE lab_investigation_runs SET status = $2, finished_at = clock_timestamp(), answer = $3::jsonb,
+           assistant_message = $4, error = $5, outcome_report = $6::jsonb WHERE id = $1`,
+          [runId, outcome.status, answer ? JSON.stringify(answer) : null, outcome.status === "completed" ? outcome.message : null,
+            outcome.status === "completed" ? null : outcome.error, report ? JSON.stringify(report) : null]);
+      });
     },
 
     async get(id: string) {
@@ -110,7 +133,8 @@ export function createRunStore(pool: Pool) {
       const result = await pool.query<RunRow>(
         `SELECT id, trial_id AS "trialId", deployment_id AS "deploymentId", task,
            instructions, instructions_sha256 AS "instructionsHash", agent_config_source AS "agentConfigSource",
-           result_schema_version AS "resultSchemaVersion", session_id AS "sessionId", model_id AS "modelId",
+           result_schema_version AS "resultSchemaVersion", case_id AS "caseId", case_version AS "caseVersion",
+           case_snapshot AS "caseSnapshot", outcome_report AS "outcomeReport", session_id AS "sessionId", model_id AS "modelId",
            status, started_at AS "startedAt", finished_at AS "finishedAt",
            (EXTRACT(EPOCH FROM (finished_at - started_at)) * 1000)::float8 AS "durationMs",
            answer, assistant_message AS message, usage, error,

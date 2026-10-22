@@ -155,14 +155,14 @@ it("reports an unfinished investigation separately from a passing evaluation", a
   expect(JSON.parse(result.stdout).checks.execution.status).toBe("not_evaluated");
 });
 
-it("saves a failed CLI run when the log service is unavailable, before starting a model", async () => {
+it.each([{ args: ["B"], schema: 1 }, { args: ["--case", "no-logs"], schema: 2 }])("saves a failed CLI run for $args when the log service is unavailable, before starting a model", async ({ args, schema }) => {
   const service = createServer((_request, response) => { response.writeHead(503).end(); });
   await new Promise<void>((resolve) => service.listen(0, "127.0.0.1", resolve));
   try {
     const address = service.address();
     if (!address || typeof address === "string") throw new Error("Expected a TCP address.");
     const result = await new Promise<{ error: Error | null; stdout: string; stderr: string }>((resolve) => {
-      execFile(process.execPath, ["--import", "tsx", "scripts/lab-investigate.ts", "B"], {
+      execFile(process.execPath, ["--import", "tsx", "scripts/lab-investigate.ts", ...args], {
         env: { ...process.env, LAB_BASE_URL: `http://127.0.0.1:${address.port}` }, timeout: 10_000,
       }, (error, stdout, stderr) => resolve({ error, stdout, stderr }));
     });
@@ -173,7 +173,7 @@ it("saves a failed CLI run when the log service is unavailable, before starting 
     const runId = result.stdout.match(/^Run: (.+)$/m)?.[1];
     expect(runId).toBeTruthy();
     expect(await runs.get(runId!)).toMatchObject({
-      trialId, deploymentId: "B", status: "failed", sessionId: null,
+      trialId, deploymentId: "B", status: "failed", sessionId: null, resultSchemaVersion: schema,
       answer: null, usage: null, events: [], error: expect.stringContaining("503"),
     });
     expect(result.stdout).not.toContain("Starting Eve");

@@ -2,7 +2,7 @@
 
 Controlled deployment scenarios for testing whether a change to an AI agent improves its behavior.
 
-**Current checkpoint:** a local PostgreSQL simulation, authenticated Next.js endpoints, and a live eve investigator through AI Gateway. Each investigation saves its task, source settings, streamed events, structured answer, and available usage in PostgreSQL. A TypeScript checker verifies citations, and a separate Gateway model reviews claims against received evidence. Both assessments remain separate. The comparison UI and agent-version experiments are next. The broader [project plan](PROJECT_BRIEF.md) describes future work.
+**Current checkpoint:** a local web workbench for a live Eve investigator through AI Gateway. Start investigations, inspect their saved trace, follow citations to returned logs, and request a separate model review. PostgreSQL retains the evidence and available usage; Evidence checks, saved case outcome checks, and model judgments remain separate. Agent-version comparisons are next. The broader [project plan](PROJECT_BRIEF.md) describes future work.
 
 Deployments A, B, and C and their logs are authored fixtures. No real deployments are created or rolled back, and the tests do not measure model quality.
 
@@ -14,9 +14,37 @@ Requirements: pnpm 12.9.1 and a running Docker engine. pnpm selects the project'
 pnpm install --frozen-lockfile
 test -f .env.local || cp .env.example .env.local
 pnpm db:up
-pnpm db:migrate
-pnpm dev
+pnpm dev:lab
 ```
+
+Open **http://127.0.0.1:3000/runs**. `dev:lab` applies pending migrations and
+starts Next.js plus one local worker. Configure Eve's model connection and the
+reviewer credentials described below before starting model work. **New
+investigation** selects one of four development cases and makes a fresh trial; **Review answer** makes a separate model
+request. Both incur model usage. Reading saved runs makes no model calls.
+
+While an operation runs, a compact activity panel shows recorded model requests
+and tool results. It stays open after completion until you close it;
+**View activity** reopens it. Only steps with details can expand. Click a citation
+to inspect its exact returned log. Evidence checks, outcome checks, and the independent review
+result sit beneath the answer on the left. Outcome failures stay visible; passing
+checks expand to show expected versus observed values and decisive evidence. **Review answer** remains at the bottom
+of the activity panel on the right. Live updates use a read-only SSE connection
+that reads saved state once per second and sends changed snapshots. Reconnecting
+or reopening a run never submits model work.
+
+Use `pnpm dev` for the viewer and HTTP tools alone. If it is already running,
+start `pnpm lab:worker` in another terminal to enable the actions. Do not run a
+second `dev:lab` on the occupied port. Set `LAB_LOCAL_EXECUTION=0` when starting
+Next.js to disable browser execution.
+
+The worker uses PostgreSQL job records and a connection-held execution lock
+shared with the CLIs. Duplicate submissions with the same request ID reuse the
+saved operation. Only one operation is admitted at a time. Refreshing the page
+does not stop it; use **Cancel** to request cancellation. On worker restart,
+unfinished browser operations are marked interrupted without automatically
+calling a model again. This workbench binds to loopback and is not a hosted,
+authenticated multi-user service.
 
 In another terminal, from the repository root:
 
@@ -62,13 +90,15 @@ A guarded rollback sends `{"targetDeploymentId":"A","expectedRevision":7}`. If a
 With PostgreSQL and Next.js running and an eve model connection configured:
 
 ```sh
+pnpm lab:investigate --case recovered-startup
+# Legacy deployment-only form remains available:
 pnpm lab:investigate B
 pnpm lab run latest
 # Use the printed run ID to reopen a specific investigation:
 pnpm lab run <run-id> --json
 ```
 
-The investigation command creates a fresh trial and run record, checks service access, starts its own eve process on `127.0.0.1:2000`, and asks the configured model to investigate. The model receives the deployment ID; the tool's credentials stay in the child process environment. It saves each event before displaying it, saves the structured `diagnosis`, `evidenceIds`, and `uncertainty`, then stops eve. It makes real model calls through the configured connection. Run `pnpm db:migrate` after updating the project to install migration 003 without resetting existing trials.
+The investigation command creates a fresh trial and run record, checks service access, starts its own eve process on `127.0.0.1:2000`, and asks the configured model to investigate. The model receives the deployment ID; the tool's credentials stay in the child process environment. It saves each event before displaying it, saves the structured `diagnosis`, `evidenceIds`, and `uncertainty`, then stops eve. It makes real model calls through the configured connection. Run `pnpm db:migrate` after updating the project to install pending migrations through 006 without resetting existing trials.
 
 `pnpm lab run` reads the saved record without starting eve or making a model call. The JSON view includes the original instructions, their SHA-256 hash, the authored agent configuration, timestamps, and all recorded events. Source files are captured at startup; this is not a snapshot of the entire runtime. Duration includes service checks, eve startup, and event saving, but excludes process teardown. Failed and cancelled runs retain partial evidence. An abrupt kill or database outage can leave a run marked `running`; the command reports that uncertainty rather than inventing a final result.
 
@@ -81,7 +111,36 @@ pnpm lab evaluate <run-id> --json
 
 `evidence-v1` checks execution status, agreement between the saved answer and its structured event, tool-trace consistency, successful retrieval, and citation membership. It pairs requests/results by turn and call ID, validates returned logs, and only credits the requested deployment's successful results recorded before the answer. Invented or unreceived citations fail even if the ID exists in the fixture database. Conflicting log content is reported. The JSON report includes each received log and its request/result event IDs.
 
-An empty successful response is distinguishable from a failed/missing retrieval. An empty citation list is explicitly unassessed. Passing these checks does **not** prove the diagnosis interprets the logs correctly: diagnosis assessment stays `not_evaluated`. Reports are computed on demand without modifying the saved run, creating evaluation rows, or calling a model. Exit status is 1 for a failed check/command, 2 for an unfinished run with no failed checks, and 0 otherwise; it is not a semantic correctness score.
+Case investigations require version-two answers: the original fields plus
+`outcome.state`, `outcome.cause`, and `outcome.configurationKey`. The trusted registry
+in `packages/lab/src/cases.ts` defines four development cases:
+
+| Case | Required structured conclusion |
+| --- | --- |
+| `missing-config` | Failed startup, missing configuration, `DATABASE_URL` |
+| `healthy-startup` | Healthy startup, no observed failure cause |
+| `recovered-startup` | Recovery, earlier missing configuration, `DATABASE_URL` |
+| `no-logs` | Unknown state/cause, no configuration claim |
+
+The [first live baseline](docs/CASE_BASELINE.md) records all four runs, the separate review, and reported costs.
+
+All target B and receive the same neutral task. The model must retrieve logs
+through the authenticated HTTP tool; neither investigator nor reviewer receives
+case names, expected answers, or the case snapshot. Log IDs are unique to each
+trial. Legacy deployment-only commands retain version-one output.
+
+`outcome-v1` compares structured claims and requires the decisive citations to
+have been retrieved before the answer. Recovery needs both failure and later
+success evidence. Empty evidence can pass only after successful empty retrieval.
+Unfinished runs and unreliable traces cannot receive an outcome pass. These checks
+assess structured claims; the independent reviewer assesses prose.
+
+Migration 006 saves the case ID/version and an immutable fixture/expectation
+snapshot. Completion saves the answer and outcome report in one transaction.
+`lab evaluate` and the UI read that saved report, without recomputing it against
+new fixtures. Old investigations display **Outcome not assessed**.
+
+An empty successful response is distinguishable from a failed/missing retrieval. An empty citation list is explicitly unassessed. Passing these checks does **not** prove the diagnosis interprets the logs correctly: diagnosis assessment stays `not_evaluated`. Evidence reports are computed on demand; case outcome reports are read from the completed run. Neither read calls a model or modifies the saved run. Exit status is 1 for a failed evidence/outcome check or command, 2 for an unfinished run with no failed checks, and 0 otherwise; it is not a semantic correctness score.
 
 To add a separate model review of a completed investigation:
 
@@ -114,16 +173,24 @@ pnpm build
 pnpm build:agent
 ```
 
-With the Next.js service also running, run `pnpm test:api`. It exercises the endpoints over real HTTP. Tests clean up only their own trials and temporary schemas. The client suite includes two real five-second timeout checks.
+With the Next.js service also running, run `pnpm test:api`. It exercises the endpoints over real HTTP. Run `pnpm test:ui` for browser checks; it uses installed Google Chrome and creates its own temporary database fixtures. These suites do not call models. Tests clean up only their own trials and temporary schemas. The client suite includes two real five-second timeout checks.
 
 ## Source map
 
 | Path | Responsibility |
 | --- | --- |
 | `src/app/api/tools/` | HTTP routes for logs, deployment state, and rollback. |
+| `src/app/runs/`, `src/components/runs/` | Saved runs, trace, evidence inspector, review history, and execution controls. |
+| `src/lib/server/`, `packages/lab/src/web.ts` | Server-only database access and explicit browser display data. |
+| `packages/lab/src/activity.ts` | Stable activity items; pairs tool requests/results by turn and call ID. |
+| `src/app/api/runs/[runId]/stream/`, `packages/lab/src/stream.ts` | Read-only SSE snapshots, disconnect cleanup, and terminal closure. |
+| `src/components/runs/use-run-controller.ts` | One detail-page connection plus explicit review and cancellation actions. |
+| `packages/lab/src/jobs.ts`, `scripts/lib/worker.ts` | Local job admission, idempotency, worker lifecycle, cancellation, and crash recovery. |
+| `scripts/dev-lab.ts`, `scripts/lab-worker.ts` | Local process entry points; reuse the same investigation/review functions as the CLIs. |
 | `src/lib/lab-http.ts` | Trial authentication and HTTP error mapping. |
 | `packages/contracts/` | Shared Zod schemas and TypeScript types. |
 | `packages/lab/` | SQL migrations, fixtures, database operations, controller CLI, and integration tests. |
+| `packages/lab/src/cases.ts`, `outcome.ts` | Trusted case definitions, trial-bound snapshots, and pure structured outcome checks. |
 | `packages/lab/src/evaluate.ts` | Pure saved-run evidence checker; reports received logs, missing/ambiguous citations, and assessment limits. |
 | `packages/lab/src/reviews.ts` | Review input preparation, persistence, and lifecycle; preserves objective checks separately. |
 | `my-agent/client/review.ts` | Bounded standalone Gateway request, review instructions, structured output, and response usage capture. |
