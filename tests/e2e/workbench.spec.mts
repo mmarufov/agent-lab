@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, webkit } from "@playwright/test";
 import { createPool } from "@agent-lab/lab/database";
 import { createTrial, deleteTrials } from "@agent-lab/lab/fixtures";
 import { createRunStore } from "@agent-lab/lab/runs";
@@ -153,6 +153,31 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   await deleteTrials(pool, trials);
   await pool.end();
+});
+
+test("Safari timestamp hydration: saved runs and reviews", async ({ baseURL }) => {
+  const browser = await webkit.launch({ channel: undefined });
+  try {
+    const page = await browser.newPage({ baseURL, timezoneId: "Asia/Tokyo" });
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("console", (message) => {
+      if (message.type() === "error" && /hydrat/i.test(message.text()))
+        errors.push(message.text());
+    });
+    await page.goto("/runs");
+    await expect(page.getByRole("button", { name: "New investigation" })).toBeVisible();
+    await page.goto(`/runs/${runId}`);
+    await page.locator(".workspace-answer .run-metadata summary").click();
+    await expect(page.locator(".workspace-answer .run-metadata")).toContainText("UTC");
+    await page.reload();
+    await page.locator(".workspace-answer").getByRole("button", { name: "log-17", exact: true }).click();
+    await expect(page.locator(".evidence-log[data-selected=true]")).toContainText("Startup failed");
+    await expect(page.getByRole("region", { name: "Independent review" })).toContainText("The startup error supports the diagnosis.");
+    expect(errors).toEqual([]);
+  } finally {
+    await browser.close();
+  }
 });
 
 test("opens the workbench, preserves its filters, and switches theme", async ({
@@ -895,7 +920,7 @@ test("keeps incoming results still until Latest results is clicked", async ({ pa
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   });
   await expect(latest).toHaveCount(0);
-  await page.locator(".run-metadata summary").click();
+  await page.locator(".workspace-answer .run-metadata summary").click();
   await expect(page.locator(".run-metadata")).toHaveAttribute("open", "");
   await expect(latest).toHaveCount(0);
   expect(await right.evaluate(element => element.scrollTop)).toBe(rightTop);

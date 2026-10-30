@@ -25,6 +25,16 @@ async function inEmptySchema(run: (pool: Pool) => Promise<void>) {
   }
 }
 
+const ALL_VERSIONS = [
+  "001_deployments",
+  "002_deployment_logs",
+  "003_investigation_runs",
+  "004_investigation_reviews",
+  "005_local_execution",
+  "006_case_outcomes",
+  "007_capture_access",
+];
+
 async function versions(pool: Pool) {
   const result = await pool.query("SELECT version FROM lab_migrations ORDER BY version");
   return result.rows.map((row) => row.version);
@@ -36,12 +46,13 @@ describe("database migrations", () => {
   it("installs the numbered migrations and safely runs again", async () => {
     await inEmptySchema(async (pool) => {
       await migrate(pool);
-      expect(await versions(pool)).toEqual(["001_deployments", "002_deployment_logs", "003_investigation_runs", "004_investigation_reviews", "005_local_execution", "006_case_outcomes"]);
+      expect(await versions(pool)).toEqual(ALL_VERSIONS);
       await migrate(pool);
-      expect(await versions(pool)).toEqual(["001_deployments", "002_deployment_logs", "003_investigation_runs", "004_investigation_reviews", "005_local_execution", "006_case_outcomes"]);
+      expect(await versions(pool)).toEqual(ALL_VERSIONS);
       expect((await pool.query("SELECT * FROM lab_deployment_logs")).rows).toEqual([]);
       expect((await pool.query("SELECT * FROM lab_investigation_runs")).rows).toEqual([]);
       expect((await pool.query("SELECT * FROM lab_investigation_reviews")).rows).toEqual([]);
+      expect((await pool.query("SELECT * FROM lab_capture_access_grants")).rows).toEqual([]);
     });
   });
 
@@ -65,7 +76,7 @@ describe("database migrations", () => {
 
       // Two callers are also safe: the migration lock serializes them.
       await Promise.all([migrate(pool), migrate(pool)]);
-      expect(await versions(pool)).toEqual(["001_deployments", "002_deployment_logs", "003_investigation_runs", "004_investigation_reviews", "005_local_execution", "006_case_outcomes"]);
+      expect(await versions(pool)).toEqual(ALL_VERSIONS);
       const state = await pool.query("SELECT current_deployment_id, revision FROM lab_trials WHERE id = $1", [trialId]);
       expect(state.rows).toEqual([{ current_deployment_id: "B", revision: 7 }]);
       expect((await pool.query("SELECT * FROM lab_deployment_logs")).rows).toEqual([]);
@@ -89,5 +100,27 @@ it("upgrades a 005 database while retaining completed legacy answers and events"
     await pool.query("INSERT INTO lab_investigation_events (run_id, event_id, payload) VALUES ($1, 'old-event', $2)", [id, JSON.stringify(event)]);
     await migrate(pool);
     expect(await createRunStore(pool).get(id)).toMatchObject({ status: "completed", answer, events: [event], caseId: null, caseSnapshot: null, outcomeReport: null, resultSchemaVersion: 1 });
+  });
+});
+
+it("adds capture access grants to a 006 database without touching its trials or runs", async () => {
+  await inEmptySchema(async (pool) => {
+    await pool.query("CREATE TABLE lab_migrations (version text PRIMARY KEY)");
+    for (const version of ALL_VERSIONS.slice(0, 6)) {
+      await pool.query(await readFile(new URL(`../migrations/${version}.sql`, import.meta.url), "utf8"));
+      await pool.query("INSERT INTO lab_migrations VALUES ($1)", [version]);
+    }
+    const { trialId } = await createTrial(pool);
+    const runs = createRunStore(pool);
+    const runId = await runs.create({ trialId, deploymentId: "B", task: "Existing", instructions: "Existing", agentConfigSource: "Existing" });
+    const before = await runs.get(runId);
+    const trial = (await pool.query("SELECT * FROM lab_trials WHERE id = $1", [trialId])).rows;
+
+    await migrate(pool);
+    await migrate(pool);
+    expect(await versions(pool)).toEqual(ALL_VERSIONS);
+    expect(await runs.get(runId)).toEqual(before);
+    expect((await pool.query("SELECT * FROM lab_trials WHERE id = $1", [trialId])).rows).toEqual(trial);
+    expect((await pool.query("SELECT * FROM lab_capture_access_grants")).rows).toEqual([]);
   });
 });

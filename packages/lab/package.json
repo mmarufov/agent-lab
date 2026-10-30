@@ -13,7 +13,10 @@
     "./reviews": "./src/reviews.ts",
     "./web": "./src/web.ts",
     "./jobs": "./src/jobs.ts",
-    "./stream": "./src/stream.ts"
+    "./stream": "./src/stream.ts",
+    "./daily-evidence": "./src/daily-evidence.ts",
+    "./capture-access": "./src/capture-access.ts",
+    "./daily-tools": "./src/daily-tools.ts"
   },
   "scripts": { "typecheck": "tsc --noEmit" },
   "dependencies": {

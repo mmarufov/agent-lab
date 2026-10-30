@@ -17,11 +17,19 @@
     "lab:logs": "node --env-file-if-exists=.env.local --import tsx scripts/lab-logs.ts",
     "lab:investigate": "node --env-file-if-exists=.env.local --import tsx scripts/lab-investigate.ts",
     "lab:review": "node --env-file-if-exists=.env.local --import tsx scripts/lab-review.ts",
+    "lab:daily-evidence": "node --env-file-if-exists=.env.local --import tsx scripts/lab-daily-evidence.ts",
     "test": "node --env-file-if-exists=.env.local node_modules/vitest/vitest.mjs run",
     "test:api": "node --env-file-if-exists=.env.local --import tsx scripts/smoke-api.ts && node --env-file-if-exists=.env.local node_modules/vitest/vitest.mjs run --config vitest.api.config.mts",
     "dev:lab": "node --env-file-if-exists=.env.local --import tsx scripts/dev-lab.ts",
     "lab:worker": "node --env-file-if-exists=.env.local --import tsx scripts/lab-worker.ts",
-    "test:ui": "node --env-file-if-exists=.env.local node_modules/@playwright/test/cli.js test"
+    "test:ui": "node --env-file-if-exists=.env.local node_modules/@playwright/test/cli.js test",
+    "daily:up": "node --import tsx scripts/daily-sandbox.ts up",
+    "daily:check": "node --import tsx scripts/daily-sandbox.ts check",
+    "daily:logs": "node --import tsx scripts/daily-sandbox.ts logs",
+    "daily:stop": "node --import tsx scripts/daily-sandbox.ts stop",
+    "daily:reset": "node --import tsx scripts/daily-sandbox.ts reset",
+    "daily:capture": "node --import tsx scripts/daily-sandbox.ts capture",
+    "daily:recover": "node --import tsx scripts/daily-sandbox.ts recover"
   },
   "dependencies": {
     "@agent-lab/contracts": "workspace:*",
