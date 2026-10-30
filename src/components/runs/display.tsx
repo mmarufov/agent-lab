@@ -60,13 +60,16 @@ export function tokens(input: number | null, output: number | null) {
   return `${input?.toLocaleString("en-US") ?? "Unknown"} in / ${output?.toLocaleString("en-US") ?? "Unknown"} out`;
 }
 export function timestamp(value: string) {
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZone: "UTC",
-  }).format(new Date(value));
+  // Intl's punctuation differs between Node and Safari even with an explicit
+  // locale/timezone. Keep SSR and the first browser render byte-for-byte equal.
+  const date = new Date(value);
+  const month = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+  ][date.getUTCMonth()];
+  const hour = date.getUTCHours();
+  const minute = String(date.getUTCMinutes()).padStart(2, "0");
+  return `${month} ${date.getUTCDate()}, ${hour % 12 || 12}:${minute} ${hour < 12 ? "AM" : "PM"}`;
 }
 export function Empty({
   title,

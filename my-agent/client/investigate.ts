@@ -25,7 +25,8 @@ export async function startInvestigator(config: GetLogsConfig, signal: AbortSign
   const executable = join(dirname(require.resolve("eve/package.json")), "bin/eve.js");
   const child = spawn(process.execPath, [executable, "dev", "--host", "127.0.0.1", "--port", "2000", "--no-ui", "--no-default-extensions"], {
     cwd: fileURLToPath(new URL("..", import.meta.url)),
-    env: { ...process.env, LAB_BASE_URL: config.baseUrl, LAB_TRIAL_TOKEN: config.trialToken, EVE_TELEMETRY_DISABLED: "1" },
+    // Pin the simulated tool set: an inherited LAB_TOOL_MODE must not change what this investigator can call.
+    env: { ...process.env, LAB_BASE_URL: config.baseUrl, LAB_TRIAL_TOKEN: config.trialToken, LAB_TOOL_MODE: "simulated", EVE_TELEMETRY_DISABLED: "1" },
     stdio: ["ignore", "pipe", "pipe"],
     detached: process.platform !== "win32",
   });

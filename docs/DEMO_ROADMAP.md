@@ -322,6 +322,26 @@ The choice affects what we can claim:
 | Saved logs from an actual app | The agent can investigate authentic captured output; both versions see identical evidence. | Current production state, or that a suggested repair works. |
 | Live deployment access | The integration can retrieve current evidence from that deployment. | Correct diagnosis or successful repair without further checks. |
 
+Started October 21: the first two steps of the real-application path are
+implemented locally. `pnpm daily:up` runs Daily's backend at a pinned commit in an
+isolated, feed-only Compose project with three fictional articles. `pnpm
+daily:capture` stops only that sandbox's PostgreSQL for 45 seconds and records
+real HTTP observations, Daily's logs, recovery, and provenance as a saved
+incident; `pnpm daily:recover` finishes a killed capture. See the README's Daily
+sandbox section. No model has seen a capture yet: investigator tools that read
+it, UI integration, and version comparisons are later steps.
+
+October 29: the retrieval connection is implemented locally. `get_daily_logs` and
+`get_daily_http_observations` read one verified capture through Next.js, using a
+one-hour access grant pinned to the capture's file hashes (migration 007).
+`pnpm lab:daily-evidence 20261022T050138Z-39b307` reads all 821 log lines and 28
+HTTP observations back over HTTP and matches them with the verified file. Eve
+selects these tools only when the trusted runner sets
+`LAB_TOOL_MODE=daily_capture`; the simulated investigator is unchanged. This shows
+the tools are connected correctly, not that a model diagnoses the outage
+correctly. Daily investigation instructions, diagnosis checks, review, and UI
+integration are next.
+
 Preferred addition after steps 1-4 work: capture one real failure from an app we
 own or an open-source app running in our own preview. Record the source revision,
 deployment/time window, original record IDs, any redactions, and whether we

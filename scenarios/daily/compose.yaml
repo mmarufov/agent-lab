@@ -1,0 +1,89 @@
+# Agent Lab's isolated copy of Daily's backend, in feed-only mode.
+# Manage it with pnpm daily:up|check|logs|stop|reset. scripts/daily-sandbox.ts
+# passes --project-name agent-lab-daily and this file to every Compose command.
+name: agent-lab-daily
+
+services:
+  daily-db:
+    image: pgvector/pgvector:0.8.0-pg16 # The database image Daily's CI uses.
+    environment:
+      POSTGRES_USER: daily_lab
+      POSTGRES_PASSWORD: daily_lab_sandbox_only
+      POSTGRES_DB: daily_lab
+    volumes:
+      - daily-db-data:/var/lib/postgresql/data
+    networks: [daily-internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U daily_lab -d daily_lab"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  daily-api:
+    # Daily's own Dockerfile and requirements at the pinned commit, extracted
+    # by the controller. GIT_SHA is the build identity /healthz reports.
+    build:
+      context: ../../.context/daily-source/backend
+      args:
+        GIT_SHA: 02afcabf6ec0695c33f4be162bb7d6a5fbecaca1
+    image: agent-lab-daily-backend:02afcabf6ec0695c33f4be162bb7d6a5fbecaca1
+    # One Uvicorn worker, with Daily's six background loops replaced by no-ops.
+    command: ["python", "/lab/launcher.py"]
+    environment:
+      DATABASE_URL: postgresql://daily_lab:daily_lab_sandbox_only@daily-db:5432/daily_lab
+      PYTHONPATH: /app
+      ENVIRONMENT: production # Daily's deployed behavior: API docs stay off.
+      LOG_LEVEL: INFO
+      # Daily constructs its OpenAI client while importing. This placeholder is
+      # never valid, and daily-api has no network route to a provider anyway.
+      OPENAI_API_KEY: agent-lab-sandbox-inert-placeholder
+      # Optional processing and serving stages from Daily's .env.example.
+      ENRICH_CROSS_SOURCE_ANALYSIS: "false"
+      ENRICH_STOCK_IMAGES: "false"
+      ENRICH_GENERATED_IMAGES: "false"
+      S3_WORKER_ENABLED: "false"
+      S3_CONSUMERS_ENABLED: "false"
+      S4_WORKER_ENABLED: "false"
+      S4_CONSUMERS_ENABLED: "false"
+      S5_READER_ENABLED: "false"
+      S5_WORKER_ENABLED: "false"
+      S5_SEMANTIC_ENABLED: "false"
+      S6_SHADOW_ENABLED: "false"
+      S6_DENSE_ENABLED: "false"
+      S6_ANN_ENABLED: "false"
+      S6_SERVING_ENABLED: "false"
+      S7_SHADOW_ENABLED: "false"
+      S7_SERVING_ENABLED: "false"
+      S7_PROVIDER_ENABLED: "false"
+      S7_BACKGROUND_ENABLED: "false"
+      S8_SERVING_ENABLED: "false"
+    volumes:
+      - ./:/lab:ro
+    networks: [daily-internal]
+    depends_on:
+      daily-db:
+        condition: service_healthy
+
+  daily-gateway:
+    # Docker drops published ports for a container attached only to an
+    # internal network, so this forwarder publishes Daily's API instead. It
+    # copies TCP bytes to daily-api:8080; Daily's code never runs here.
+    image: agent-lab-daily-backend:02afcabf6ec0695c33f4be162bb7d6a5fbecaca1
+    pull_policy: never
+    command: ["python", "/lab/gateway.py", "0.0.0.0:8080", "daily-api:8080"]
+    ports:
+      - "127.0.0.1:8081:8080"
+    volumes:
+      - ./:/lab:ro
+    networks: [daily-edge, daily-internal]
+    depends_on: [daily-api]
+
+networks:
+  daily-internal:
+    internal: true # No route out for Daily's API or database.
+  daily-edge: {}
+
+volumes:
+  daily-db-data:
+    labels:
+      dev.agent-lab.daily.database-image: pgvector/pgvector:0.8.0-pg16

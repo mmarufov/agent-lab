@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "reader": {
+    "userId": "00000000-0000-4000-8000-000000000001",
+    "email": "agent-lab-reader@example.com",
+    "displayName": "Agent Lab test reader",
+    "sessionId": "00000000-0000-4000-8000-000000000101",
+    "preferencesId": "00000000-0000-4000-8000-000000000201",
+    "aiProfile": "Agent Lab sandbox reader. Interested in fictional test articles about technology and science.",
+    "interests": {
+      "topics": ["technology", "science"],
+      "people": [],
+      "locations": [],
+      "industries": [],
+      "excluded_topics": [],
+      "notes": "Agent Lab sandbox fixture; not a real reader."
+    }
+  },
+  "source": {
+    "id": "00000000-0000-4000-8000-000000000301",
+    "url": "https://example.com/agent-lab/daily/feed.xml",
+    "name": "Agent Lab fixture source",
+    "category": "technology"
+  },
+  "articles": [
+    {
+      "id": "00000000-0000-4000-8000-000000000401",
+      "title": "Agent Lab test article 1: fictional city adds protected bike lanes",
+      "summary": "Fictional fixture written by Agent Lab for the isolated Daily sandbox. Not a real news story.",
+      "url": "https://example.com/agent-lab/daily/articles/1",
+      "category": "technology",
+      "publishedMinutesAgo": 15,
+      "relevanceScore": 0.9
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000402",
+      "title": "Agent Lab test article 2: fictional lab reports a battery recycling result",
+      "summary": "Fictional fixture written by Agent Lab for the isolated Daily sandbox. Not a real news story.",
+      "url": "https://example.com/agent-lab/daily/articles/2",
+      "category": "science",
+      "publishedMinutesAgo": 30,
+      "relevanceScore": 0.8
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000403",
+      "title": "Agent Lab test article 3: fictional startup opens a community workshop",
+      "summary": "Fictional fixture written by Agent Lab for the isolated Daily sandbox. Not a real news story.",
+      "url": "https://example.com/agent-lab/daily/articles/3",
+      "category": "technology",
+      "publishedMinutesAgo": 45,
+      "relevanceScore": 0.7
+    }
+  ]
+}
