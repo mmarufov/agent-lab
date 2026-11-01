@@ -342,6 +342,33 @@ the tools are connected correctly, not that a model diagnoses the outage
 correctly. Daily investigation instructions, diagnosis checks, review, and UI
 integration are next.
 
+October 30: Eve investigates a capture locally. `pnpm lab:daily-investigate
+20261022T050138Z-39b307` grants access to that recording, starts Eve in
+`daily_capture` mode with its own instructions, and saves the run in the existing
+tables (migration 008, `source = daily_capture`). Both modes now run without Eve's
+optional built-in tools or delegation and with session usage limits. One live run
+used 5 model steps and 9 tool calls (72,107 input and 2,070 output tokens,
+reported $0.00834). It reported 500s, then timeouts, then recovery, and named
+lost database connectivity as the likely cause. All 18 citations came from records
+returned before the answer. That checks provenance only; whether the diagnosis is
+right is not assessed. Diagnosis grading, review, and UI integration for Daily
+runs come next.
+
+October 31: three local checks of saved Daily runs, none of them a diagnosis
+grade. `pnpm lab:review` reviews a Daily answer against the records it retrieved
+(`daily-review-v1`, migration 009). One live review of the run above found its 6
+claims supported, and an authored false answer with the same records had all 5
+claims unsupported: one observation each, not an accuracy rate. Migration 010
+makes saved events append-only and seals each finished run with a SHA-256
+fingerprint computed by PostgreSQL; the 17 runs that already existed are labeled
+`legacy_snapshot`. `pnpm lab:coverage` (migration 011, profile
+`daily-feed-availability-v1`) checks whether the retrieved records establish the
+recording's server errors, requests without a response, and recovery after the
+last failure. Run `7fe9b123` covers all three. A labeled test fixture that stopped
+reading before recovery misses it and names `http-0024` and `http-0027` as the
+acceptable records. Coverage does not read the answer. Root-cause log coverage,
+diagnosis grading, and UI integration for Daily runs remain next.
+
 Preferred addition after steps 1-4 work: capture one real failure from an app we
 own or an open-source app running in our own preview. Record the source revision,
 deployment/time window, original record IDs, any redactions, and whether we

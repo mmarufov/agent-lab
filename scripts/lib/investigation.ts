@@ -5,6 +5,7 @@ import { createTrial } from "@agent-lab/lab/fixtures";
 import { createRunStore } from "@agent-lab/lab/runs";
 import { acquireExecution } from "@agent-lab/lab/jobs";
 import { getLogs } from "../../my-agent/agent/lib/get-logs";
+import { investigatorInstructions } from "../../my-agent/client/instructions";
 import {
   investigate,
   investigationTask,
@@ -43,10 +44,7 @@ export async function runInvestigation(
   try {
     signal.throwIfAborted();
     const [instructions, agentConfigSource] = await Promise.all([
-      readFile(
-        new URL("../../my-agent/agent/instructions.md", import.meta.url),
-        "utf8",
-      ),
+      investigatorInstructions("simulated"),
       readFile(
         new URL("../../my-agent/agent/agent.ts", import.meta.url),
         "utf8",
@@ -75,7 +73,7 @@ export async function runInvestigation(
     await getLogs({ deploymentId }, config);
     signal.throwIfAborted();
     options.onProgress?.("Service access checked. Starting Eve...");
-    server = await startInvestigator(config, signal);
+    server = await startInvestigator({ mode: "simulated", ...config }, signal);
     options.onProgress?.("Investigating through AI Gateway...");
     const id = runId;
     const result = await investigate({

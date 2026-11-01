@@ -1,46 +1,93 @@
 import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { Pool } from "pg";
 import {
   reviewConfigSchema, reviewInputSchema, reviewObservationSchema, reviewSchemaFor,
   type InvestigationReview, type ReviewConfig, type ReviewInput, type ReviewObservation,
 } from "@agent-lab/contracts";
+import { dailyReviewInputSchema, orderDailyRecords, type DailyReviewInput } from "@agent-lab/contracts/daily-review";
 import { evaluateRun } from "./evaluate";
-import { createRunStore } from "./runs";
+import { readDailyEvidence, type DailyEvidenceReport } from "./daily-evaluate";
+import { EVIDENCE } from "./daily-evidence";
+import { createRunStore, requireVerifiedIntegrity, type DailyRun, type RunSource, type SimulatedRun } from "./runs";
 import { transaction } from "./database";
 
-interface ReviewRow {
+type Status = "running" | "completed" | "failed" | "cancelled";
+/** Reviews saved before migration 009 have no source in their configuration; all of them reviewed simulated runs. */
+type SavedReviewConfig = Omit<ReviewConfig, "source"> & { source?: RunSource };
+
+interface CommonReview {
   id: string;
   runId: string;
-  configuration: ReviewConfig;
+  configuration: SavedReviewConfig;
   promptHash: string;
-  input: ReviewInput;
-  evidenceCheck: ReturnType<typeof evaluateRun>;
-  status: "running" | "completed" | "failed" | "cancelled";
-  startedAt: Date;
-  finishedAt: Date | null;
+  status: Status;
+  startedAt: string;
+  finishedAt: string | null;
   durationMs: number | null;
   observation: ReviewObservation | null;
   review: InvestigationReview | null;
   error: string | null;
 }
 
+/** One saved review attempt. Its source is the reviewed run's source. */
+export type SavedReview =
+  | (CommonReview & { source: "simulated"; input: ReviewInput; evidenceCheck: ReturnType<typeof evaluateRun> })
+  | (CommonReview & { source: "daily_capture"; input: DailyReviewInput; evidenceCheck: DailyEvidenceReport });
+
+const requiresAnswer = "Review requires a completed investigation with a matching saved answer.";
+const requiresTrace = "Cannot review an invalid evidence trace; inspect the evidence checks first.";
+
+function prepareSimulated(run: SimulatedRun) {
+  const evidenceCheck = evaluateRun(run);
+  if (evidenceCheck.checks.execution.status !== "pass" || evidenceCheck.checks.answer.status !== "pass") throw new Error(requiresAnswer);
+  if (evidenceCheck.checks.toolTrace.status !== "pass") throw new Error(requiresTrace);
+  const logs = new Map(evidenceCheck.retrievedEvidence.map(({ log }) => [log.id, log]));
+  const input = reviewInputSchema.parse({
+    task: run.task, deploymentId: run.deploymentId, answer: run.answer, evidence: [...logs.values()],
+  });
+  return { input, evidenceCheck };
+}
+
+// A Daily review's evidence check is the report frozen when the investigation
+// finished. The saved events must still produce that report, and the reviewer
+// receives exactly the records it counts. Capture files are never reopened.
+function prepareDaily(run: DailyRun) {
+  const frozen = run.evidenceReport;
+  if (run.status !== "completed" || !frozen) throw new Error(requiresAnswer);
+  const { report, records } = readDailyEvidence({ ...run, evidenceSha256: run.captureSha256[EVIDENCE] });
+  if (!isDeepStrictEqual(report, frozen)) {
+    throw new Error(`The saved events of run ${run.id} no longer produce the evidence report frozen when it finished. No review was created; inspect it with pnpm lab evaluate.`);
+  }
+  if (frozen.checks.execution.status !== "pass" || frozen.checks.answer.status !== "pass") throw new Error(requiresAnswer);
+  if (frozen.checks.toolTrace.status !== "pass") throw new Error(requiresTrace);
+  const input = dailyReviewInputSchema.parse({
+    task: run.task, captureId: run.captureId, evidenceSha256: run.captureSha256[EVIDENCE], answer: run.answer,
+    ...orderDailyRecords(records),
+  });
+  const supplied = [...input.evidence, ...input.untimedEvidence].map((record) => record.id).sort();
+  if (!isDeepStrictEqual(supplied, [...new Set(frozen.retrievedEvidence.map((record) => record.id))].sort())) {
+    throw new Error("The records prepared for review differ from those the frozen evidence report counts. No review was created.");
+  }
+  return { input, evidenceCheck: frozen };
+}
+
 // Trusted controller access. No reviewer write tool or public endpoint.
 export function createReviewStore(pool: Pool) {
   const store = {
+    /** Saves a running attempt with its exact input, configuration, and evidence check. No model is called. */
     async start(runId: string, rawConfiguration: ReviewConfig, jobId?: string) {
       const configuration = reviewConfigSchema.parse(rawConfiguration);
-      const run = await createRunStore(pool).get(runId);
-      const evidenceCheck = evaluateRun(run);
-      if (evidenceCheck.checks.execution.status !== "pass" || evidenceCheck.checks.answer.status !== "pass") {
-        throw new Error("Review requires a completed investigation with a matching saved answer.");
+      const run = await createRunStore(pool).getAny(runId);
+      if (configuration.source !== run.source) {
+        throw new Error(`Reviewer configuration ${configuration.promptVersion} is for ${configuration.source} runs; run ${run.id} is a ${run.source} run.`);
       }
-      if (evidenceCheck.checks.toolTrace.status !== "pass") throw new Error("Cannot review an invalid evidence trace; inspect the evidence checks first.");
-      const logs = new Map(evidenceCheck.retrievedEvidence.map(({ log }) => [log.id, log]));
-      const input = reviewInputSchema.parse({
-        task: run.task, deploymentId: run.deploymentId, answer: run.answer, evidence: [...logs.values()],
-      });
-      if (Buffer.byteLength(JSON.stringify(input), "utf8") > configuration.settings.maxInputBytes) {
-        throw new Error("Review input exceeds the configured size limit. No model request was made.");
+      // A running run is refused below as unfinished; a finished one must still match its fingerprint.
+      if (run.status !== "running") requireVerifiedIntegrity(run, "No review was created");
+      const { input, evidenceCheck } = run.source === "daily_capture" ? prepareDaily(run) : prepareSimulated(run);
+      const bytes = Buffer.byteLength(JSON.stringify(input), "utf8");
+      if (bytes > configuration.settings.maxInputBytes) {
+        throw new Error(`Review input is ${bytes} bytes, over the ${configuration.settings.maxInputBytes}-byte limit. No review was created and no model request was made; evidence is never truncated, summarized, or split.`);
       }
       const id = randomUUID();
       const hash = createHash("sha256").update(configuration.system).digest("hex");
@@ -55,7 +102,7 @@ export function createReviewStore(pool: Pool) {
           if (linked.rowCount !== 1) throw new Error("Cannot attach this review to its operation.");
         }
       });
-      return { id, input };
+      return { id, runId: run.id, source: run.source, input, configuration };
     },
 
     async recordResponse(id: string, rawObservation: ReviewObservation) {
@@ -83,24 +130,30 @@ export function createReviewStore(pool: Pool) {
       if (result.rowCount !== 1) throw new Error("Review is missing or already finished.");
     },
 
-    async get(id: string) {
-      const result = await pool.query<ReviewRow>(
-        `SELECT id, run_id AS "runId", configuration, prompt_sha256 AS "promptHash", input,
-           evidence_check AS "evidenceCheck", status, started_at AS "startedAt", finished_at AS "finishedAt",
-           (EXTRACT(EPOCH FROM (finished_at - started_at)) * 1000)::float8 AS "durationMs", observation, review, error
-         FROM lab_investigation_reviews
-         ${id === "latest" ? "ORDER BY started_at DESC, id DESC LIMIT 1" : "WHERE id = $1"}`,
+    async get(id: string): Promise<SavedReview> {
+      const result = await pool.query<Omit<CommonReview, "startedAt" | "finishedAt"> & {
+        source: RunSource; input: unknown; evidenceCheck: unknown; startedAt: Date; finishedAt: Date | null;
+      }>(
+        `SELECT v.id, v.run_id AS "runId", r.source, v.configuration, v.prompt_sha256 AS "promptHash", v.input,
+           v.evidence_check AS "evidenceCheck", v.status, v.started_at AS "startedAt", v.finished_at AS "finishedAt",
+           (EXTRACT(EPOCH FROM (v.finished_at - v.started_at)) * 1000)::float8 AS "durationMs", v.observation, v.review, v.error
+         FROM lab_investigation_reviews v JOIN lab_investigation_runs r ON r.id = v.run_id
+         ${id === "latest" ? "ORDER BY v.started_at DESC, v.id DESC LIMIT 1" : "WHERE v.id = $1"}`,
         id === "latest" ? [] : [id],
       );
       const row = result.rows[0];
       if (!row) throw new Error("Investigation review not found.");
-      return { ...row, startedAt: row.startedAt.toISOString(), finishedAt: row.finishedAt?.toISOString() ?? null };
+      return { ...row, startedAt: row.startedAt.toISOString(), finishedAt: row.finishedAt?.toISOString() ?? null } as SavedReview;
     },
   };
   return store;
 }
 
+export type StartedReview = Awaited<ReturnType<ReturnType<typeof createReviewStore>["start"]>>;
+
 export interface ReviewRequestOptions {
+  /** The configuration saved with the attempt; the request must use exactly this. */
+  configuration: ReviewConfig;
   signal?: AbortSignal;
   onResponse: (observation: ReviewObservation) => Promise<void>;
 }
@@ -119,17 +172,24 @@ function safeReviewError(error: unknown) {
 export async function reviewSavedRun(
   pool: Pool,
   runId: string,
-  configuration: ReviewConfig,
-  generate: (input: ReviewInput, options: ReviewRequestOptions) => Promise<unknown>,
-  options: { signal?: AbortSignal; onCreated?: (id: string) => void; jobId?: string } = {},
+  /** The reviewer configuration for a run of this source. */
+  configure: (source: RunSource) => ReviewConfig,
+  generate: (input: ReviewInput | DailyReviewInput, request: ReviewRequestOptions) => Promise<unknown>,
+  options: { signal?: AbortSignal; onCreated?: (attempt: StartedReview) => void; jobId?: string } = {},
 ) {
   options.signal?.throwIfAborted();
   const store = createReviewStore(pool);
-  const { id, input } = await store.start(runId, configuration, options.jobId);
+  // Resolve 'latest' once. The configuration is chosen for this run's source,
+  // and the attempt belongs to this run even if a newer run starts meanwhile.
+  const run = await createRunStore(pool).getAny(runId);
+  const attempt = await store.start(run.id, configure(run.source), options.jobId);
+  const { id } = attempt;
   try {
-    options.onCreated?.(id);
+    options.onCreated?.(attempt);
     options.signal?.throwIfAborted();
-    const review = await generate(input, { signal: options.signal, onResponse: (value) => store.recordResponse(id, value) });
+    const review = await generate(attempt.input, {
+      configuration: attempt.configuration, signal: options.signal, onResponse: (value) => store.recordResponse(id, value),
+    });
     options.signal?.throwIfAborted();
     await store.finish(id, { status: "completed", review });
   } catch (error) {

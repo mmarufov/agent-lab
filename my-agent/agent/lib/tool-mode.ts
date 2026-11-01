@@ -10,3 +10,9 @@ export function labToolMode(env: NodeJS.ProcessEnv = process.env): LabToolMode {
   if (mode === "simulated" || mode === "daily_capture") return mode;
   throw new Error(`LAB_TOOL_MODE must be "simulated" or "daily_capture", not "${mode}".`);
 }
+
+/** The evidence tools each mode exposes: tools/get_logs.ts and tools/daily_capture.ts. */
+export const evidenceTools: Record<LabToolMode, readonly string[]> = {
+  simulated: ["get_logs"],
+  daily_capture: ["get_daily_logs", "get_daily_http_observations"],
+};

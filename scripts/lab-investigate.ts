@@ -1,5 +1,6 @@
 import { caseIdSchema, getLogsInputSchema } from "@agent-lab/contracts";
 import { createPool } from "@agent-lab/lab/database";
+import { describeIntegrity } from "@agent-lab/lab/runs";
 import { runInvestigation } from "./lib/investigation";
 
 async function main() {
@@ -44,6 +45,7 @@ async function main() {
     console.log(
       `\nSession: ${saved.sessionId ?? "not started"}\nStatus: ${saved.status}`,
     );
+    console.log(describeIntegrity(saved.integrity));
     if (saved.answer)
       console.log(`Answer: ${JSON.stringify(saved.answer, null, 2)}`);
     if (saved.usage) {

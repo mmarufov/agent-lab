@@ -83,12 +83,17 @@ The simulated-deployment tools require `Authorization: Bearer <trial-token>`; a 
 | `pnpm lab inspect <trial-id>` | Inspect state and committed actions. |
 | `pnpm lab promote <trial-id>` | Simulate another actor promoting C. |
 | `pnpm lab:daily-evidence <capture-id>` | Read one recorded capture back through the Daily evidence tools, then revoke its grant. |
+| `pnpm lab:daily-investigate <capture-id>` | Investigate one recorded capture with Eve through AI Gateway, save the run, then revoke its grant. Makes real model calls. |
+| `pnpm lab:coverage <run-id\|latest>` | Check which availability facts of a finished Daily run's full recording its retrieved records establish, and save the assessment. No model call. |
+| `pnpm lab coverage <assessment-id\|latest> [--json]` | Reopen a saved coverage assessment from PostgreSQL alone. |
 
 A guarded rollback sends `{"targetDeploymentId":"A","expectedRevision":7}`. If another actor has changed the revision, the service returns HTTP 409 without overwriting the new state. Omitting `expectedRevision` is intentionally supported as an unsafe experiment control. Changes and action records commit together in a database transaction.
 
 ## Agent package
 
-`my-agent/agent/agent.ts` selects the model. `instructions.md` tells it to retrieve evidence and cite log IDs. `tools/get_logs.ts` wraps the HTTP client and reads `LAB_BASE_URL` and `LAB_TRIAL_TOKEN` from runtime configuration; see `my-agent/.env.example`. Credentials are not model-facing tool arguments. The tool set is chosen when a session starts from `LAB_TOOL_MODE`, which only the process that starts Eve sets: unset or `simulated` exposes `get_logs`, and `daily_capture` exposes the two Daily evidence tools instead. `pnpm lab:investigate` pins `simulated`.
+`my-agent/agent/agent.ts` selects the model and reasoning effort, turns off Eve's optional built-in tools and delegation (`defaultTools: false`, `tool: false`), and sets session usage limits of 500,000 input tokens, 20,000 output tokens, and $0.10 of reported model cost. Eve checks those limits between model calls, so the call that crosses one finishes and can exceed it; the runners treat Eve's request to approve more usage as a failure and never approve it. `tools/get_logs.ts` wraps the HTTP client and reads `LAB_BASE_URL` and `LAB_TRIAL_TOKEN` from runtime configuration; see `my-agent/.env.example`. Credentials are not model-facing tool arguments.
+
+`LAB_TOOL_MODE`, which only the process that starts Eve sets, chooses both the tools and the instructions when a session starts. Unset or `simulated` exposes `get_logs` with `prompts/simulated.md` (the former `agent/instructions.md`, byte for byte, so its SHA-256 matches earlier runs); `daily_capture` exposes the two Daily evidence tools with `prompts/daily-capture.md`. `agent/instructions/investigator.ts` selects the text through Eve's dynamic instructions, and `client/instructions.ts` reads the same file for the run record. Each runner gives Eve only its own mode's credentials. `pnpm lab:investigate` pins `simulated`.
 
 With PostgreSQL and Next.js running and an eve model connection configured:
 
@@ -101,9 +106,15 @@ pnpm lab run latest
 pnpm lab run <run-id> --json
 ```
 
-The investigation command creates a fresh trial and run record, checks service access, starts its own eve process on `127.0.0.1:2000`, and asks the configured model to investigate. The model receives the deployment ID; the tool's credentials stay in the child process environment. It saves each event before displaying it, saves the structured `diagnosis`, `evidenceIds`, and `uncertainty`, then stops eve. It makes real model calls through the configured connection. Run `pnpm db:migrate` after updating the project to install pending migrations through 006 without resetting existing trials.
+The investigation command creates a fresh trial and run record, checks service access, starts its own eve process on `127.0.0.1:2000`, and asks the configured model to investigate. The model receives the deployment ID; the tool's credentials stay in the child process environment. It saves each event before displaying it, saves the structured `diagnosis`, `evidenceIds`, and `uncertainty`, then stops eve. It makes real model calls through the configured connection. Run `pnpm db:migrate` after updating the project to install pending migrations through 011 without resetting existing trials.
 
 `pnpm lab run` reads the saved record without starting eve or making a model call. The JSON view includes the original instructions, their SHA-256 hash, the authored agent configuration, timestamps, and all recorded events. Source files are captured at startup; this is not a snapshot of the entire runtime. Duration includes service checks, eve startup, and event saving, but excludes process teardown. Failed and cancelled runs retain partial evidence. An abrupt kill or database outage can leave a run marked `running`; the command reports that uncertainty rather than inventing a final result.
+
+Migration 010 makes saved events append-only and seals each run when it finishes. Triggers refuse to change an event's payload, ID, order, or recorded time, to delete one event, to truncate the events table on its own, or to add an event once the run has a final status. Deleting a whole run, or its trial, still removes its events through the existing cascades. An event insert takes the same row lock on its run that finishing takes, including direct SQL inserts and worker recovery, so a concurrent event either commits first and is part of the final record or is refused. Only a READ COMMITTED transaction, PostgreSQL's default and what every Lab writer uses, may finish a run, because an older REPEATABLE READ snapshot could miss a committed event.
+
+The statement that gives a run its final status also saves a SHA-256 fingerprint of one versioned jsonb document: the run's ID and source identity (trial and deployment, or capture ID and pinned file hashes), its final status and answer, and every event's ID and complete payload in saved order. PostgreSQL builds the same document again to verify it, so JavaScript key order never matters. The fingerprint's version, event count, creation time, and origin are saved with it, and after that the run row never changes. Runs that had already finished were sealed by the migration and are labeled `legacy_snapshot`: that protects them from then on, but says nothing about their earlier history. Their evidence reports and reviews were not rewritten.
+
+`lab run`, `lab evaluate`, and both investigation commands print `Integrity: verified`, `MISMATCH`, `MISSING`, or `not sealed yet`, and `--json` includes the recomputed fingerprint. A mismatch makes `lab evaluate` exit 1. New reviews and coverage assessments refuse a finished run whose record does not verify; saved reviews still reopen from their own snapshots. The fingerprint covers the fields above, not usage, model, session, error text, or the derived evidence report; the immutability trigger protects those. These controls cover ordinary application and database writes. An administrator who disables the triggers can still change rows, and verification then reports a mismatch.
 
 To check the saved evidence with only PostgreSQL running:
 
@@ -156,7 +167,7 @@ pnpm lab review <review-id> --json      # Exact input, settings, checks, output,
 
 Only PostgreSQL and Gateway access are needed for reviewing a saved run. Put a Gateway key in ignored `.env.local` as `LAB_REVIEW_GATEWAY_API_KEY`. This setting is specific to the reviewer and does not replace Eve's configured connection. Standard `AI_GATEWAY_API_KEY` or `VERCEL_OIDC_TOKEN` also work; Eve's local CLI login alone is not inherited by this standalone SDK call. See [Gateway authentication](https://vercel.com/docs/ai-gateway/authentication-and-byok).
 
-The default reviewer is `openai/gpt-6.1-sol`; override it with `LAB_REVIEW_MODEL`. The AI SDK sends fresh review instructions plus only the task, answer, deployment ID, and successful recorded logs. It receives no investigator conversation, investigator instructions, database access, or tools. `review-v1` asks it to quote claims, classify each as supported/unsupported/uncertain, cite logs, and identify missing evidence. TypeScript validates the response shape, exact answer quotations, and evidence references. These checks do not prove the review's reasoning is correct or complete.
+The default reviewer is `openai/gpt-6.1-sol`; override it with `LAB_REVIEW_MODEL`. For a simulated run, the AI SDK sends fresh review instructions plus only the task, answer, deployment ID, and successful recorded logs (Daily runs are described in [Reviewing a Daily investigation](#reviewing-a-daily-investigation)). It receives no investigator conversation, investigator instructions, database access, or tools. `review-v1` asks it to quote claims, classify each as supported/unsupported/uncertain, cite logs, and identify missing evidence. TypeScript validates the response shape, exact answer quotations, and evidence references. These checks do not prove the review's reasoning is correct or complete.
 
 Migration 004 adds a separate review-attempt table. Each attempt preserves its exact input, prompt/version/hash, model/settings, evidence-check snapshot, status, response metadata, reported usage, and valid review or error. The review never replaces the original answer or clears a failed check. Repeating `lab:review` creates another attempt; `lab review` only reads. The generating command exits 1 for execution failure or failed objective checks, not merely because a model returns an unfavorable opinion.
 
@@ -242,7 +253,7 @@ A capture is served only when it completed, its evidence was fully collected, an
 
 Pages contain the original records in recorded order, with IDs, timestamps, messages, statuses, timeouts, and truncation markers unchanged. A serialized page never exceeds 64 KiB: with large records it holds fewer, and a record too large for any page is listed under `oversized` with its size instead of being shortened. Every page names its `captureId` and `evidenceSha256`, and the clients refuse a page from any other source. `nextCursor` is bound to the capture, the tool, and the filters, and the same request returns the same page. Responses carry `Cache-Control: no-store` and never include controller records, outcome checks, file paths, or credentials.
 
-In `daily_capture` mode the tools read `LAB_BASE_URL`, `LAB_DAILY_CAPTURE_TOKEN`, `LAB_DAILY_CAPTURE_ID`, and `LAB_DAILY_EVIDENCE_SHA256` when they run, so the token never enters Eve's durable tool records. Their descriptions say they read a fixed recording, not Daily's current health. The investigator's instructions are unchanged; instructions for investigating Daily come next.
+In `daily_capture` mode the tools read `LAB_BASE_URL`, `LAB_DAILY_CAPTURE_TOKEN`, `LAB_DAILY_CAPTURE_ID`, and `LAB_DAILY_EVIDENCE_SHA256` when they run, so the token never enters Eve's durable tool records. Their descriptions say they read a fixed recording, not Daily's current health. `pnpm lab:daily-investigate`, below, gives them to an investigator.
 
 With PostgreSQL and `pnpm dev` running:
 
@@ -251,6 +262,79 @@ pnpm lab:daily-evidence 20261022T050138Z-39b307
 ```
 
 It verifies that capture, creates a one-hour grant, reads every HTTP observation and log line back through the two clients page by page, compares them with the verified file, revokes the grant, and shows the revoked token being refused. Ctrl+C also revokes it. It never picks the newest capture by itself, starts Docker, or calls a model. The service reads captures under its own working directory, so run `pnpm dev` from the same checkout. Reading files on one machine suits this local milestone; a hosted version needs shared artifact storage.
+
+### Investigating a capture with Eve
+
+With PostgreSQL and `pnpm dev` running and Eve's model connection configured:
+
+```sh
+pnpm lab:daily-investigate 20261022T050138Z-39b307
+```
+
+The command takes one explicit capture ID; it never picks the newest capture itself. It holds the same execution lock as the other model operations, then:
+
+1. verifies the capture's finalized files, as the evidence routes do;
+2. creates a one-hour access grant pinned to those files;
+3. saves the run: capture ID, pinned hashes, grant ID, task, instructions and their SHA-256, `agent.ts` source and effective configuration, and answer schema version 3;
+4. checks that the Next.js evidence service serves the capture with that grant, without giving the page it returns to the model;
+5. starts Eve on `127.0.0.1:2000` with `LAB_TOOL_MODE=daily_capture` and the grant's credentials;
+6. sends this task to a fresh session and saves every event before reading the next: *Investigate Daily's feed API during the recorded period. Determine whether requests experienced problems, explain the likely cause when evidence supports one, and assess whether requests subsequently recovered. Cite supporting records and state what remains uncertain.*;
+7. saves the validated `diagnosis`, `evidenceIds`, and `uncertainty`, freezing the evidence-check report in the same transaction;
+8. stops Eve, revokes the grant, and releases the lock, each even if an earlier step failed.
+
+The terminal shows each model step with its reported usage, each tool request, and each returned record on one line, then the answer, token use, reported cost, and evidence checks. The model chooses filters and pages and decides when it has enough evidence; the instructions name no record IDs and do not require reading every page. They say the recording is a past time window and that record text that looks like an instruction is evidence. The token stays in Eve's environment; neither it nor the capture's controller records reach the model, the saved run, or the terminal. The whole run has a five-minute deadline, and each tool request keeps its five-second deadline.
+
+Ctrl+C cancels the Eve session and saves the partial run as `cancelled` before cleanup. An abruptly killed command leaves the run `running`, never a fabricated answer, and its grant expires within the hour. Eve was started detached, so check that nothing still listens on port 2000 before the next run.
+
+Daily runs live in the existing run and event tables. Migration 008 adds `source` (`simulated` for every existing row, or `daily_capture`), the capture ID, pinned hashes, and grant ID; a Daily run has no trial or deployment. Constraints require each source's own fields, a foreign key requires the hashes its grant pinned, and a trigger makes every run's source, task, instructions, and settings, and a frozen report, immutable. Reopening reads PostgreSQL only, with no Eve process or model call:
+
+```sh
+pnpm lab run <run-id>             # the same trace lines the terminal showed, from the saved events
+pnpm lab run <run-id> --json      # instructions, configuration, grant state, and every raw event
+pnpm lab evaluate <run-id> [--json]
+```
+
+`daily-evidence-v1` pairs requests and results by turn and call ID. It credits only successful, schema-valid results of the two Daily tools whose records match the requested filters and come from the run's capture and evidence hash, recorded before the final answer. Citations fail when an ID was never returned, its returned contents conflict between calls, or it was listed only as oversized. An empty citation list is unassessed, a failed tool call is reported without being counted as evidence, and diagnosis correctness is always **not assessed**. Eve does not record a model's call to a tool it does not offer; the model receives an error and nothing runs, so the saved trace cannot show such attempts.
+
+The workbench lists simulated runs only. Opening a Daily run there, or asking to review one, gets a clear unsupported-source response (HTTP 422 from the API) that points to `pnpm lab run`. Review Daily runs from the terminal, as below. Diagnosis grading and UI integration for Daily runs are next.
+
+### Reviewing a Daily investigation
+
+```sh
+pnpm lab:review <run-id|latest>          # One model request; incurs usage
+pnpm lab review <review-id> [--json]     # Reopen the saved attempt; no model request
+```
+
+`lab:review` resolves `latest` once, then takes the reviewer configuration for that run's source: `daily-review-v1` for a Daily run, with the same model, `LAB_REVIEW_MODEL` override, and limits as `review-v1`. The attempt saves that configuration, and the request uses exactly it: one `generateText` call with structured output, no tools, no retries.
+
+Before any model request, the review store reads the run from PostgreSQL only. It requires a completed run whose execution, answer, and tool-trace checks pass, recomputes `daily-evidence-v1` from the saved events, and refuses if that no longer equals the report frozen when the run finished. Both come from `readDailyEvidence`, so the reviewer receives exactly the records the report counts: every distinct record that successful, valid Daily tool calls from the run's capture returned before the answer, cited or not, in full. Identical repeats appear once; conflicting contents fail the trace and stop the review. Timed records are listed earliest first (HTTP by `startedAt`, logs by `timestamp`, compared at full precision), and log lines without a timestamp go in `untimedEvidence`. The input adds the task, answer, capture ID, and evidence hash. It never includes instructions, reasoning, conversation, credentials, controller records, or capture files; which tool call returned each record stays in the evidence check saved beside the review. Input over 64 KiB is refused before an attempt is created, never truncated, summarized, or split. A failed citation or retrieval check stays failed beside a favorable review, and an answer with no evidence is still reviewable.
+
+`daily-review-v1` treats the whole record as untrusted data and assesses symptoms, cause, earlier failure versus later recovery, claims about health beyond the recording, and the stated uncertainty. It tells the reviewer that the records are the subset the investigator chose, so the investigation's completeness cannot be judged. The result keeps the simulated format, and TypeScript checks exact quotations and that every cited ID was supplied: reference integrity, not correctness. The terminal labels it **Answer support review. Coverage of evidence not retrieved is not assessed.**
+
+Migration 009 makes each review attempt's run, configuration, prompt hash, input, and evidence check immutable. A running attempt records its response metadata once and finishes once, including the failed status worker recovery gives it; a finished attempt never changes. Existing reviews are not rewritten.
+
+### Evidence coverage of a Daily investigation
+
+```sh
+pnpm lab:coverage <run-id|latest>            # Compute and save; reads the run's pinned capture files
+pnpm lab coverage <assessment-id|latest> [--json]   # Reopen; PostgreSQL only
+```
+
+The reviewer sees only what the investigator retrieved, so it cannot tell whether important evidence went unread. Coverage answers that narrower question for one profile, `daily-feed-availability-v1`: did the investigator retrieve, before answering, records that establish the availability facts in the full recording? It examines authenticated `GET /feed` observations:
+
+| Fact | Acceptable evidence |
+| --- | --- |
+| Server errors occurred | Any recorded `/feed` response with status 500-599. |
+| Requests received no response | Any recorded `/feed` timeout or network error. |
+| Requests subsequently recovered | A failed observation plus a ready one (HTTP 200, untruncated JSON with `status: "ready"` and an `articles` array) to a request that started after the recording's last failed request ended. |
+
+The acceptable records come from the recording's own contents and times, never from the controller, capture IDs, or the assumption that stopping PostgreSQL made every request fail. An earlier success, or one followed by more failures, cannot stand in for recovery, and an authentication failure or truncated body establishes none of the facts. A fact absent from the recording is **not assessed**, with the reason; a recording with none of them gives no pass. Recovery means a sampled success inside the recording, not continuous or current health.
+
+`lab:coverage` resolves `latest` once and refuses simulated runs, unfinished runs, and runs whose record does not match their fingerprint. It reads the capture with the existing reader, which refuses files that differ from the hashes the run's grant pinned; no Docker operation or new grant is needed. It recomputes `daily-evidence-v1` from the saved events and requires the frozen report, then counts every distinct record that report counts, received before the answer, cited or not. Each must equal the recorded record in full, not only by ID. A missing or changed file, or retrieved contents that differ, is an error and nothing is saved. A failed or cancelled investigation, or an invalid trace, is saved as not assessed; a completed one with a valid trace and no records misses every fact present. `coverage-v1`, the small evaluator in `packages/lab/src/coverage.ts`, knows nothing about Daily: a fact is a list of requirements, each met by any one of several records.
+
+Migration 011 stores each assessment once per run, profile version, and evaluator version: the fingerprint it verified, the capture hashes, the facts, every acceptable record in full, the retrieved matches with the tool call and events that carried them, the missing alternatives, the result, and the time. A trigger accepts it only for a finished Daily run that verifies now and names that run's fingerprint and files, and saved assessments never change. Repeating `lab:coverage` returns the saved assessment after checking that the recording still reproduces it; a difference means the rules changed without a new version and is refused. `lab coverage` reopens it without capture files, Eve, Next.js, or a model. Both exit 0 when covered, 1 when missed, and 2 when not assessed.
+
+The terminal shows each fact as covered, missed, or not assessed, the retrieved IDs that met it or the acceptable IDs that were missing, and `Answer interpretation: not assessed by this coverage check`. It shows no percentage. Coverage does not read the answer: a wrong conclusion drawn from the right records still passes. Root-cause log coverage and semantic assessment of the answer are separate, later profiles or evaluators. Neither the investigator nor the reviewer receives the expected facts, the full recording, or an assessment.
 
 ## Verify
 
@@ -270,6 +354,12 @@ The Daily controller and capture tests in `pnpm test` fake Docker but use real G
 
 The Daily evidence tests build synthetic captures in temporary directories and use real PostgreSQL for grants. They cover schema, hash, count, and duplicate-ID failures, unsafe selections and symbolic links, changed files, paging under every limit and filter, the 64 KiB limit and oversized records, cursor binding, token expiry and revocation, and responses free of controller data. One test also reads the real clean capture when it is present.
 
+The investigator runtime tests compile and run a copy of the real `my-agent/agent` files with `eve dev`, replacing only the model with Eve's `mockModel`; each model call is answered by the test, which sees exactly what Eve presents. They show the tools and instructions in each mode, the model's paging through the real evidence handler, calls to unavailable tools such as `bash`, `get_logs`, `web_fetch`, and `agent` being refused, and the input-token limit stopping a session. The `lab:daily-investigate` tests use the same fixture for missing, incomplete, changed, and inaccessible recordings, failed tools, repeated and conflicting events, invalid answers, cancellation, the deadline, the usage limit, the frozen report, and reopening in a fresh process. No model provider is called. Vitest sets `NODE_ENV=test`, which makes Eve swap every authored model for its own mock, so the fixture clears it for its Eve process.
+
+The integrity tests use real PostgreSQL, separate connections for concurrent inserts and finishes, and a test helper that disables triggers as an administrator could. They cover rejected changes to saved events and finished runs, identical and conflicting replay, cancellation, worker recovery, a REPEATABLE READ finisher, key-order stability, detection of changed values, migration upgrade and reapplication, legacy labeling, and cascade cleanup. The coverage tests use synthetic recordings in temporary directories: server errors, timeouts, network errors, failures after an apparent recovery, truncated responses, irrelevant authentication failures, retrieval with and without citation, unfinished and invalid investigations, missing, changed, and mismatched evidence, a false conclusion that still passes, concurrent repeats, and reopening after the recording is deleted.
+
+The Daily review tests use real PostgreSQL and a test function in place of the model. They cover overlapping pages, repeated and uncited records, untimed lines, failed calls, records after the answer or from another capture, conflicting contents, a frozen report the events no longer produce, oversized input (zero requests, no attempt), invented citations and quotations, provider failure, timeout, cancellation, unsaveable final status, missing credentials, immutability, and reopening in a fresh process.
+
 ## Source map
 
 | Path | Responsibility |
@@ -287,8 +377,14 @@ The Daily evidence tests build synthetic captures in temporary directories and u
 | `packages/lab/` | SQL migrations, fixtures, database operations, controller CLI, and integration tests. |
 | `packages/lab/src/cases.ts`, `outcome.ts` | Trusted case definitions, trial-bound snapshots, and pure structured outcome checks. |
 | `packages/lab/src/evaluate.ts` | Pure saved-run evidence checker; reports received logs, missing/ambiguous citations, and assessment limits. |
-| `packages/lab/src/reviews.ts` | Review input preparation, persistence, and lifecycle; preserves objective checks separately. |
-| `my-agent/client/review.ts` | Bounded standalone Gateway request, review instructions, structured output, and response usage capture. |
+| `packages/lab/src/reviews.ts` | Review input preparation for both run sources, frozen-report verification, persistence, and lifecycle; preserves objective checks separately. |
+| `packages/lab/src/review-report.ts` | Terminal lines shared by `lab:review` and `lab review`. |
+| `packages/lab/migrations/009_immutable_reviews.sql` | Immutable review snapshots and finished attempts. |
+| `packages/lab/migrations/010_evidence_integrity.sql` | Append-only events, run row locking, the versioned fingerprint document, sealing at finish, and legacy snapshots. |
+| `packages/lab/src/coverage.ts` | `coverage-v1`: facts, required combinations, and alternative records, independent of Daily. |
+| `packages/lab/src/daily-coverage.ts`, `coverage-report.ts` | `daily-feed-availability-v1` facts, the comparison with the recording, the assessment store, and the terminal lines both coverage commands print. |
+| `packages/lab/migrations/011_coverage_assessments.sql`, `scripts/lab-coverage.ts` | Immutable coverage assessments and `pnpm lab:coverage`. |
+| `my-agent/client/review.ts` | Reviewer configuration per source (`review-v1`, `daily-review-v1`), one bounded Gateway request, structured output, and response usage capture. |
 | `my-agent/` | Eve configuration, instructions, HTTP tool, local process/client integration, and tests. |
 | `scripts/` | Logs and investigation CLIs, plus HTTP checks. |
 | `scenarios/daily/` | Daily sandbox Compose file, feed-only launcher, TCP gateway, seed program, and fixture. |
@@ -299,6 +395,14 @@ The Daily evidence tests build synthetic captures in temporary directories and u
 | `packages/lab/src/daily-tools.ts`, `packages/contracts/src/daily-evidence.ts` | Daily evidence pages, cursors, page-size limit, error mapping, and the tool contracts. |
 | `my-agent/agent/tools/daily_capture.ts`, `my-agent/agent/lib/{daily-evidence,tool-mode}.ts` | Daily evidence clients, Eve tool definitions, and `LAB_TOOL_MODE` selection. |
 | `scripts/lab-daily-evidence.ts` | `pnpm lab:daily-evidence`: verify, grant, read back, compare, revoke. |
+| `my-agent/agent/instructions/investigator.ts`, `my-agent/prompts/` | Instructions selected by `LAB_TOOL_MODE`; `client/instructions.ts` reads the same files for run records. |
+| `scripts/lab-daily-investigate.ts`, `scripts/lib/daily-investigation.ts` | `pnpm lab:daily-investigate`: verify, grant, save, check the service, run Eve, save, revoke. |
+| `my-agent/client/investigate.ts` | Eve process supervisor (per-mode environment), session event reader, tasks, and usage-limit handling. |
+| `packages/lab/migrations/008_daily_capture_runs.sql`, `packages/lab/src/runs.ts` | Run sources, per-source constraints, immutable sources, and frozen Daily evidence reports. |
+| `packages/lab/src/daily-evaluate.ts`, `packages/contracts/src/daily-review.ts` | `daily-evidence-v1` and the records a Daily run received, shared by its evidence report and its review; the Daily review input and exact time ordering. |
+| `packages/lab/src/daily-evaluate.ts`, `daily-trace.ts` | `daily-evidence-v1` citation provenance checks, and the trace lines both the runner and `lab run` print. |
+| `packages/contracts/src/daily-investigation.ts` | The Daily answer schema (version 3). |
+| `scripts/lib/investigator-fixture.ts` | Test-only copy of the investigator with a scripted `mockModel`, and a test evidence service. |
 | `scripts/lib/daily-test-harness.ts` | Fake Docker and a Daily-shaped HTTP server shared by the sandbox and capture tests. |
 
 Local credentials, build output, research artifacts, and personal session notes are gitignored.

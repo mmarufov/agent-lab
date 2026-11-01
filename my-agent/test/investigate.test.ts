@@ -2,7 +2,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
 import type { MessageStreamEvent } from "eve/client";
-import { investigate } from "../client/investigate";
+import { investigate, investigatorEnv } from "../client/investigate";
 
 const coordinates = { sequence: 1, stepIndex: 0, turnId: "turn-test" };
 const usage = { inputTokens: 30, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0 };
@@ -141,4 +141,33 @@ it("requests and validates v2 without including case names, fixtures, or expecte
 });
 it("rejects a legacy answer when the caller requires v2", async () => {
   await expect(investigate({ host, deploymentId: "B", resultSchemaVersion: 2, signal: AbortSignal.timeout(3_000) })).rejects.toThrow(/invalid structured answer/);
+});
+
+it("starts Eve with only the selected mode's evidence settings, never an inherited credential of the other mode", () => {
+  const inherited = {
+    PATH: "/usr/bin",
+    LAB_TOOL_MODE: "daily_capture",
+    LAB_BASE_URL: "http://inherited.example",
+    LAB_TRIAL_TOKEN: "inherited-trial-token",
+    LAB_DAILY_CAPTURE_TOKEN: "inherited-capture-token",
+    LAB_DAILY_CAPTURE_ID: "20261022T050320Z-ad558c",
+    LAB_DAILY_EVIDENCE_SHA256: "f".repeat(64),
+  };
+  expect(investigatorEnv({ mode: "simulated", baseUrl: "http://127.0.0.1:3000", trialToken: "trial-token" }, inherited)).toEqual({
+    PATH: "/usr/bin",
+    EVE_TELEMETRY_DISABLED: "1",
+    LAB_TOOL_MODE: "simulated",
+    LAB_BASE_URL: "http://127.0.0.1:3000",
+    LAB_TRIAL_TOKEN: "trial-token",
+  });
+  const daily = { captureToken: "capture-token", captureId: "20261022T050138Z-39b307", evidenceSha256: "e".repeat(64) };
+  expect(investigatorEnv({ mode: "daily_capture", baseUrl: "http://127.0.0.1:3000", ...daily }, inherited)).toEqual({
+    PATH: "/usr/bin",
+    EVE_TELEMETRY_DISABLED: "1",
+    LAB_TOOL_MODE: "daily_capture",
+    LAB_BASE_URL: "http://127.0.0.1:3000",
+    LAB_DAILY_CAPTURE_TOKEN: "capture-token",
+    LAB_DAILY_CAPTURE_ID: daily.captureId,
+    LAB_DAILY_EVIDENCE_SHA256: daily.evidenceSha256,
+  });
 });

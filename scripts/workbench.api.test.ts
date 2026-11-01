@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { get as httpGet } from "node:http";
 import { afterAll, beforeAll, expect, it } from "vitest";
+import { createCaptureAccess } from "@agent-lab/lab/capture-access";
 import { createPool } from "@agent-lab/lab/database";
 import { createTrial, deleteTrials } from "@agent-lab/lab/fixtures";
 import { createRunStore } from "@agent-lab/lab/runs";
+import { CLEAN_CAPTURE_ID, capturesDir, removeCaptureDirs, writeCapture } from "../packages/lab/test/daily-capture-fixture";
 
 const base = process.env.LAB_BASE_URL ?? "http://127.0.0.1:3000";
 const pool = createPool();
@@ -186,4 +188,36 @@ it("validates case selectors before admitting model work", async () => {
       expect((await pool.query("SELECT id FROM lab_execution_jobs WHERE id = $1", [id])).rows).toEqual([]);
     }
   } finally { await lease.release(); }
+});
+
+it("keeps a Daily capture run out of the workbench and answers its simulated-only paths with a clear refusal", async () => {
+  const dir = await capturesDir();
+  await writeCapture(dir);
+  const access = createCaptureAccess(pool, dir);
+  const { grant } = await access.grant(CLEAN_CAPTURE_ID);
+  const id = await createRunStore(pool).createDaily({
+    captureId: grant.captureId, grantId: grant.id, sha256: grant.sha256, task: "Daily fixture",
+    instructions: "PRIVATE_DAILY", agentConfigSource: "PRIVATE_CONFIG", configuration: { toolMode: "daily_capture" },
+  });
+  try {
+    const listed = await (await fetch(`${base}/api/runs`)).json();
+    expect(listed.items.map((item: { id: string }) => item.id)).not.toContain(id);
+    for (const path of [`/api/runs/${id}`, `/api/runs/${id}/stream`]) {
+      const response = await fetch(`${base}${path}`);
+      expect(response.status).toBe(422);
+      const body = await response.json();
+      expect(body.error.message).toContain(`read it with pnpm lab run ${id}`);
+      expect(JSON.stringify(body)).not.toContain("PRIVATE_");
+    }
+    const page = await fetch(`${base}/runs/${id}`);
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    expect(html).toContain("Recorded Daily investigation.");
+    expect(html).not.toContain("PRIVATE_");
+  } finally {
+    await pool.query("DELETE FROM lab_investigation_runs WHERE id = $1", [id]);
+    await access.revoke(grant.id);
+    await pool.query("DELETE FROM lab_capture_access_grants WHERE id = $1", [grant.id]);
+    await removeCaptureDirs();
+  }
 });
