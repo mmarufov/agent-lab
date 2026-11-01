@@ -102,6 +102,62 @@ export function incidentEvidence(): DailyCaptureEvidence[] {
   ];
 }
 
+export const READY_FEED = { status: "ready", articles: [{ id: "a1", title: "Fixture" }] };
+
+/**
+ * One observation with an explicit outcome and timing, for coverage cases.
+ * Request n starts at second 10n and takes durationMs (250 by default).
+ */
+export function observation(
+  n: number,
+  outcome: number | "timeout" | "network_error",
+  options: { path?: string; authenticated?: boolean; durationMs?: number; body?: unknown; truncated?: boolean } = {},
+): DailyHttpObservation {
+  const path = options.path ?? "/feed";
+  const durationMs = options.durationMs ?? 250;
+  const base = {
+    kind: "http" as const, id: `http-${pad(n)}`, method: "GET" as const, path, authenticated: options.authenticated ?? path === "/feed",
+    startedAt: at(n * 10), endedAt: at(n * 10 + durationMs / 1_000), elapsedMs: durationMs, deadlineMs: 5_000,
+  };
+  if (outcome === "timeout") return { ...base, outcome };
+  if (outcome === "network_error") return { ...base, outcome, error: { name: "SocketError", code: "UND_ERR_SOCKET", message: "other side closed" } };
+  const body = options.body ?? (outcome === 200 ? READY_FEED : { detail: "Internal server error" });
+  return {
+    ...base,
+    outcome: "response",
+    response: {
+      status: outcome, headers: { "content-type": "application/json" }, bodyFormat: "json", body,
+      bodyBytes: JSON.stringify(body).length, bodyTruncated: options.truncated ?? false,
+    },
+  };
+}
+
+/**
+ * Every availability case on /feed, in order: an early success, a 500, a
+ * five-second timeout, a network error, an apparent recovery, a 503 after it,
+ * an unauthenticated 401, a truncated 200, recovery, a 503 on another path,
+ * another success, and an authenticated 401 afterward. Plus three log lines.
+ */
+export function feedAvailabilityEvidence(): DailyCaptureEvidence[] {
+  return [
+    observation(1, 200),
+    observation(2, 500),
+    observation(3, "timeout", { durationMs: 5_000 }),
+    observation(4, "network_error"),
+    observation(5, 200),
+    observation(6, 503),
+    observation(7, 401, { authenticated: false, body: { detail: "Not authenticated" } }),
+    observation(8, 200, { truncated: true }),
+    observation(9, 200),
+    observation(10, 503, { path: "/readyz", body: { status: "unready" } }),
+    observation(11, 200),
+    observation(12, 401, { body: { detail: "Session expired" } }),
+    log(1, "ERROR app.main: Unhandled error on GET /feed"),
+    log(2, "psycopg_pool.PoolTimeout: couldn't get a connection after 30.00 sec"),
+    log(3, 'INFO:     172.21.0.4:2 - "GET /feed HTTP/1.1" 200 OK'),
+  ];
+}
+
 export function controllerRecords(): DailyCaptureControllerRecord[] {
   return [
     { kind: "phase", id: "ctl-0001", at: at(0), phase: "outage", status: "started", detail: `${CONTROLLER_ONLY} stop daily-db` },

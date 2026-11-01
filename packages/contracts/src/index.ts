@@ -82,9 +82,16 @@ export const investigationReviewSchema = z.strictObject({
   summary: z.string().trim().min(1),
 });
 
+/** What a reviewer's references are checked against: a simulated or a Daily review input. */
+interface ReviewedAnswer {
+  answer: { diagnosis: string; uncertainty: string };
+  evidence: readonly { id: string }[];
+  untimedEvidence?: readonly { id: string }[];
+}
+
 // These checks establish reference integrity, not the truth of a model's judgment.
-export function reviewSchemaFor(input: ReviewInput) {
-  const ids = new Set(input.evidence.map((log) => log.id));
+export function reviewSchemaFor(input: ReviewedAnswer) {
+  const ids = new Set([...input.evidence, ...(input.untimedEvidence ?? [])].map((record) => record.id));
   return investigationReviewSchema.superRefine((review, context) => {
     for (const field of ["diagnosis", "uncertainty"] as const) {
       if (!review.claims.some((claim) => claim.field === field)) {
@@ -114,7 +121,11 @@ export const reviewObservationSchema = z.strictObject({
   }),
 });
 
+/** Which kind of investigation a reviewer configuration is for. Reviews saved before it existed are all simulated. */
+export const reviewSourceSchema = z.enum(["simulated", "daily_capture"]);
+
 export const reviewConfigSchema = z.strictObject({
+  source: reviewSourceSchema,
   modelId: z.string().min(1),
   promptVersion: z.string().min(1),
   schemaVersion: z.literal(1),
@@ -128,6 +139,7 @@ export type ReviewInput = z.infer<typeof reviewInputSchema>;
 export type InvestigationReview = z.infer<typeof investigationReviewSchema>;
 export type ReviewObservation = z.infer<typeof reviewObservationSchema>;
 export type ReviewConfig = z.infer<typeof reviewConfigSchema>;
+export type ReviewSource = z.infer<typeof reviewSourceSchema>;
 
 export const deploymentStateSchema = z.object({
   trialId: z.uuid(),

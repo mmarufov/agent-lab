@@ -4,7 +4,7 @@ import {
   type ExecutionRequest,
 } from "@agent-lab/contracts";
 import { transaction } from "./database";
-import { createRunStore } from "./runs";
+import { createRunStore, UnsupportedRunSourceError } from "./runs";
 import { evaluateRun } from "./evaluate";
 
 const executionLock = 713906422;
@@ -154,7 +154,9 @@ export function createJobStore(pool: Pool) {
             "busy",
           );
         if (command.kind === "review") {
-          const run = await createRunStore(pool).get(command.runId);
+          const run = await createRunStore(pool).get(command.runId).catch((error: unknown) => {
+            throw error instanceof UnsupportedRunSourceError ? new JobError(error.message, "invalid") : error;
+          });
           const { checks } = evaluateRun(run);
           if (
             [checks.execution, checks.answer, checks.toolTrace].some(
@@ -163,6 +165,12 @@ export function createJobStore(pool: Pool) {
           ) {
             throw new JobError(
               "This investigation does not have a completed answer and valid evidence trace to review.",
+              "invalid",
+            );
+          }
+          if (run.integrity.status !== "verified") {
+            throw new JobError(
+              "This investigation's saved record does not match its integrity fingerprint, so it cannot be reviewed.",
               "invalid",
             );
           }

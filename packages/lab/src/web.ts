@@ -62,7 +62,8 @@ export function createWebStore(pool: Pool) {
         (EXTRACT(EPOCH FROM (r.finished_at - r.started_at)) * 1000)::float8 AS "durationMs", r.usage,
         (SELECT status FROM lab_investigation_reviews WHERE run_id = r.id ORDER BY started_at DESC, id DESC LIMIT 1) AS "reviewStatus"
         FROM lab_investigation_runs r
-        WHERE ($1::text IS NULL OR r.deployment_id = $1) AND ($2::text IS NULL OR r.status = $2)
+        -- The workbench shows simulated deployment runs only; Daily capture runs are read with pnpm lab run.
+        WHERE r.source = 'simulated' AND ($1::text IS NULL OR r.deployment_id = $1) AND ($2::text IS NULL OR r.status = $2)
           AND ($3::uuid IS NULL OR (r.started_at, r.id) < (SELECT started_at, id FROM lab_investigation_runs WHERE id = $3))
         ORDER BY r.started_at DESC, r.id DESC LIMIT $4`,
         [
@@ -268,11 +269,13 @@ export function createWebStore(pool: Pool) {
         evaluatorVersion: evaluation.evaluatorVersion,
         missingEvidenceIds: evaluation.missingEvidenceIds,
         ambiguousEvidenceIds: evaluation.ambiguousEvidenceIds,
-        reviewEligible: [
-          evaluation.checks.execution,
-          evaluation.checks.answer,
-          evaluation.checks.toolTrace,
-        ].every((check) => check.status === "pass"),
+        reviewEligible:
+          run.integrity.status === "verified" &&
+          [
+            evaluation.checks.execution,
+            evaluation.checks.answer,
+            evaluation.checks.toolTrace,
+          ].every((check) => check.status === "pass"),
         reviews,
         operations,
         runner: { online: runner.online, busy: runner.busy },

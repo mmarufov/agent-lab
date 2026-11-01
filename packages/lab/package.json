@@ -11,12 +11,18 @@
     "./migrate": "./src/migrate.ts",
     "./runs": "./src/runs.ts",
     "./reviews": "./src/reviews.ts",
+    "./review-report": "./src/review-report.ts",
     "./web": "./src/web.ts",
     "./jobs": "./src/jobs.ts",
     "./stream": "./src/stream.ts",
     "./daily-evidence": "./src/daily-evidence.ts",
     "./capture-access": "./src/capture-access.ts",
-    "./daily-tools": "./src/daily-tools.ts"
+    "./daily-tools": "./src/daily-tools.ts",
+    "./daily-evaluate": "./src/daily-evaluate.ts",
+    "./daily-trace": "./src/daily-trace.ts",
+    "./coverage": "./src/coverage.ts",
+    "./daily-coverage": "./src/daily-coverage.ts",
+    "./coverage-report": "./src/coverage-report.ts"
   },
   "scripts": { "typecheck": "tsc --noEmit" },
   "dependencies": {

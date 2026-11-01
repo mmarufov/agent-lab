@@ -5,28 +5,69 @@ import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { Client, type MessageStreamEvent, type SessionWaitingStreamEvent } from "eve/client";
+import type { z } from "zod";
 import { getLogsInputSchema, investigationAnswerV1Schema, investigationAnswerV2Schema, type InvestigationAnswer } from "@agent-lab/contracts";
-import type { GetLogsConfig } from "../agent/lib/get-logs";
 
 export type { MessageStreamEvent } from "eve/client";
 export const investigatorHost = "http://127.0.0.1:2000";
+export const EVE_STARTUP_MS = 60_000;
+
+/** The evidence one Eve process may read, and the credentials it reads it with. The model sees none of these values. */
+export type InvestigatorSettings =
+  | { mode: "simulated"; baseUrl: string; trialToken: string }
+  | { mode: "daily_capture"; baseUrl: string; captureToken: string; captureId: string; evidenceSha256: string };
+
+// Every evidence setting either mode reads. Eve receives only its own mode's
+// values, so a credential inherited from this shell never reaches the other mode.
+const EVIDENCE_SETTINGS = [
+  "LAB_TOOL_MODE",
+  "LAB_BASE_URL",
+  "LAB_TRIAL_TOKEN",
+  "LAB_DAILY_CAPTURE_TOKEN",
+  "LAB_DAILY_CAPTURE_ID",
+  "LAB_DAILY_EVIDENCE_SHA256",
+];
+
+/** The environment Eve starts with: the base environment minus every evidence setting, plus this run's. */
+export function investigatorEnv(settings: InvestigatorSettings, base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base, EVE_TELEMETRY_DISABLED: "1" };
+  for (const name of EVIDENCE_SETTINGS) delete env[name];
+  if (settings.mode === "simulated")
+    return { ...env, LAB_TOOL_MODE: "simulated", LAB_BASE_URL: settings.baseUrl, LAB_TRIAL_TOKEN: settings.trialToken };
+  return {
+    ...env,
+    LAB_TOOL_MODE: "daily_capture",
+    LAB_BASE_URL: settings.baseUrl,
+    LAB_DAILY_CAPTURE_TOKEN: settings.captureToken,
+    LAB_DAILY_CAPTURE_ID: settings.captureId,
+    LAB_DAILY_EVIDENCE_SHA256: settings.evidenceSha256,
+  };
+}
 
 // This is a local CLI supervisor, outside agent/. It is not a model tool.
-export async function startInvestigator(config: GetLogsConfig, signal: AbortSignal) {
+// Tests pass another app directory and port to run a fixture copy of the agent.
+export async function startInvestigator(
+  settings: InvestigatorSettings,
+  signal: AbortSignal,
+  options: { appDir?: string; port?: number; env?: Record<string, string | undefined> } = {},
+) {
   signal.throwIfAborted();
-  // Never attach a new trial to an existing Eve process with another token.
+  const port = options.port ?? 2000;
+  const host = `http://127.0.0.1:${port}`;
+  const secret = settings.mode === "simulated" ? settings.trialToken : settings.captureToken;
+  // Never attach a new run to an existing Eve process with another token.
   const probe = createServer();
   await new Promise<void>((resolve, reject) => {
-    probe.once("error", () => reject(new Error("Port 2000 is in use. Stop the existing Eve server before running lab:investigate.")));
-    probe.listen(2000, "127.0.0.1", () => probe.close((error) => error ? reject(error) : resolve()));
+    probe.once("error", () => reject(new Error(`Port ${port} is in use. Stop the existing Eve server before starting an investigation.`)));
+    probe.listen(port, "127.0.0.1", () => probe.close((error) => error ? reject(error) : resolve()));
   });
 
   const require = createRequire(import.meta.url);
   const executable = join(dirname(require.resolve("eve/package.json")), "bin/eve.js");
-  const child = spawn(process.execPath, [executable, "dev", "--host", "127.0.0.1", "--port", "2000", "--no-ui", "--no-default-extensions"], {
-    cwd: fileURLToPath(new URL("..", import.meta.url)),
-    // Pin the simulated tool set: an inherited LAB_TOOL_MODE must not change what this investigator can call.
-    env: { ...process.env, LAB_BASE_URL: config.baseUrl, LAB_TRIAL_TOKEN: config.trialToken, LAB_TOOL_MODE: "simulated", EVE_TELEMETRY_DISABLED: "1" },
+  const child = spawn(process.execPath, [executable, "dev", "--host", "127.0.0.1", "--port", String(port), "--no-ui", "--no-default-extensions"], {
+    cwd: options.appDir ?? fileURLToPath(new URL("..", import.meta.url)),
+    // LAB_TOOL_MODE pins the tool set and instructions: an inherited value must not change them.
+    env: investigatorEnv(settings, { ...process.env, ...options.env }),
     stdio: ["ignore", "pipe", "pipe"],
     detached: process.platform !== "win32",
   });
@@ -56,14 +97,14 @@ export async function startInvestigator(config: GetLogsConfig, signal: AbortSign
     try { await closed; } finally { clearTimeout(force); }
   }
 
-  const startup = AbortSignal.any([signal, AbortSignal.timeout(60_000)]);
+  const startup = AbortSignal.any([signal, AbortSignal.timeout(EVE_STARTUP_MS)]);
   try {
     while (true) {
       startup.throwIfAborted();
-      if (exitDescription) throw new Error(`Eve stopped during startup (${exitDescription}).\n${output.replaceAll(config.trialToken, "[redacted]")}`);
+      if (exitDescription) throw new Error(`Eve stopped during startup (${exitDescription}).\n${output.replaceAll(secret, "[redacted]")}`);
       try {
         // Client.health() has no signal parameter in this installed version.
-        const response = await fetch(`${investigatorHost}/eve/v1/health`, {
+        const response = await fetch(`${host}/eve/v1/health`, {
           signal: AbortSignal.any([startup, AbortSignal.timeout(1_000)]), redirect: "error",
         });
         if (response.ok) {
@@ -75,7 +116,7 @@ export async function startInvestigator(config: GetLogsConfig, signal: AbortSign
       } catch { startup.throwIfAborted(); }
       await delay(250, undefined, { signal: startup });
     }
-    return { host: investigatorHost, stop };
+    return { host, stop };
   } catch (error) {
     await stop();
     if (startup.aborted && !signal.aborted) throw new Error("Eve did not become ready within 60 seconds. Check pnpm --filter my-agent dev.");
@@ -88,6 +129,12 @@ export function investigationTask(deploymentId: string) {
   return `Investigate simulated deployment ${JSON.stringify(input.deploymentId)}. Report your diagnosis, supporting log IDs, and uncertainty.`;
 }
 
+/** The task for an investigation of one recorded Daily capture. The access grant, not the task, selects the capture. */
+export const dailyCaptureTask =
+  "Investigate Daily's feed API during the recorded period. Determine whether requests experienced problems, " +
+  "explain the likely cause when evidence supports one, and assess whether requests subsequently recovered. " +
+  "Cite supporting records and state what remains uncertain.";
+
 export async function investigate(options: {
   host: string;
   deploymentId: string;
@@ -96,16 +143,33 @@ export async function investigate(options: {
   onSession?: (sessionId: string) => void | Promise<void>;
   onEvent?: (event: MessageStreamEvent) => void | Promise<void>;
 }) {
-  const answerSchema = options.resultSchemaVersion === 2 ? investigationAnswerV2Schema : investigationAnswerV1Schema;
+  const answerSchema: z.ZodType<InvestigationAnswer> = options.resultSchemaVersion === 2 ? investigationAnswerV2Schema : investigationAnswerV1Schema;
+  return runInvestigatorSession({ ...options, task: investigationTask(options.deploymentId), answerSchema });
+}
+
+/**
+ * Send the task to a fresh session and read its events until the answer. The
+ * task is the only message; every event is passed to onEvent, and awaited,
+ * before the next one is read.
+ */
+export async function runInvestigatorSession<Answer>(options: {
+  host: string;
+  task: string;
+  answerSchema: z.ZodType<Answer>;
+  signal: AbortSignal;
+  onSession?: (sessionId: string) => void | Promise<void>;
+  onEvent?: (event: MessageStreamEvent) => void | Promise<void>;
+}) {
+  const { answerSchema } = options;
   const client = new Client({ host: options.host, redirect: "error" });
   const { session, response } = await client.sessions.create({
-    message: investigationTask(options.deploymentId),
+    message: options.task,
     outputSchema: answerSchema,
     signal: options.signal,
   });
   const events: MessageStreamEvent[] = [];
   let message = "";
-  let answer: InvestigationAnswer | undefined;
+  let answer: Answer | undefined;
   let completed = false;
   let settled = false;
   let usage: SessionWaitingStreamEvent["data"]["usage"];
@@ -117,6 +181,11 @@ export async function investigate(options: {
       await options.onEvent?.(event);
       if (event.type === "turn.failed" || event.type === "session.failed") throw new Error(`Investigation failed: ${event.data.message}`);
       if (event.type === "turn.cancelled") throw new Error("Investigation was cancelled.");
+      if (event.type === "input.requested") {
+        // Eve asks before exceeding a configured usage limit. Never approve it here.
+        const limit = event.data.requests.find((request) => request.kind === "session-limit");
+        if (limit) throw new Error(`Eve stopped at a session usage limit, and more usage was not approved. ${limit.prompt.split(". ")[0]}.`);
+      }
       if (event.type === "authorization.required" || event.type === "input.requested") {
         throw new Error("Eve needs interactive input. Open pnpm --filter my-agent dev to complete setup, then stop it and retry.");
       }
@@ -134,7 +203,7 @@ export async function investigate(options: {
     }
     options.signal.throwIfAborted();
     if (!completed || !settled) throw new Error("Investigation ended without a completed answer.");
-    if (!answer) throw new Error("Investigation ended without a structured answer.");
+    if (answer === undefined) throw new Error("Investigation ended without a structured answer.");
     return { sessionId: response.sessionId, message, answer, events, usage };
   } catch (error) {
     // Aborting HTTP only detaches the client; explicitly cancel server work too.

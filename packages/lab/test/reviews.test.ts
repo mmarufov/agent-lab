@@ -6,12 +6,12 @@ import { createTrial, deleteTrials } from "../src/fixtures";
 import { migrate } from "../src/migrate";
 import { createRunStore } from "../src/runs";
 import { createReviewStore, reviewSavedRun } from "../src/reviews";
-import type { ReviewConfig, ReviewInput, ReviewObservation } from "@agent-lab/contracts";
+import type { ReviewConfig, ReviewObservation } from "@agent-lab/contracts";
 
 const pool = createPool();
 const runs = createRunStore(pool);
 const trialIds: string[] = [];
-const config: ReviewConfig = { modelId: "test/reviewer", system: "Review only.", promptVersion: "test-v1", schemaVersion: 1,
+const config: ReviewConfig = { source: "simulated", modelId: "test/reviewer", system: "Review only.", promptVersion: "test-v1", schemaVersion: 1,
   settings: { maxOutputTokens: 1000, maxRetries: 0, timeoutMs: 1000, maxInputBytes: 65_536 } };
 const observation: ReviewObservation = { responseId: "response-1", resolvedModelId: "test/reviewer", finishReason: "stop",
   usage: { inputTokens: 80, outputTokens: 20, totalTokens: 100, costUsd: 0.001 } };
@@ -46,8 +46,8 @@ afterAll(async () => { try { await deleteTrials(pool, trialIds); } finally { awa
 it("saves the exact review input, config, observation, and assessment for a fresh CLI to reopen", async () => {
   const runId = await fixture();
   const original = await runs.get(runId);
-  let supplied: ReviewInput | undefined;
-  const result = await reviewSavedRun(pool, runId, config, async (input, { onResponse }) => {
+  let supplied: unknown;
+  const result = await reviewSavedRun(pool, runId, () => config, async (input, { onResponse }) => {
     supplied = input;
     await onResponse(observation);
     return review;
@@ -68,7 +68,7 @@ it("saves the exact review input, config, observation, and assessment for a fres
 
 it("keeps failed objective checks even when the reviewer says the diagnosis is supported", async () => {
   const runId = await fixture(["log-999"]);
-  const result = await reviewSavedRun(pool, runId, config, async (_input, { onResponse }) => {
+  const result = await reviewSavedRun(pool, runId, () => config, async (_input, { onResponse }) => {
     await onResponse(observation);
     return review;
   });
@@ -80,7 +80,7 @@ it("keeps failed objective checks even when the reviewer says the diagnosis is s
 
 it("records a model failure without publishing a review or leaking the raw error", async () => {
   const runId = await fixture();
-  const result = await reviewSavedRun(pool, runId, config, async () => {
+  const result = await reviewSavedRun(pool, runId, () => config, async () => {
     throw Object.assign(new Error("SECRET provider error body"), { statusCode: 503 });
   });
   expect(result.status).toBe("failed");
@@ -92,7 +92,7 @@ it("records a model failure without publishing a review or leaking the raw error
 
 it("retains charged usage when a review has invalid evidence references", async () => {
   const runId = await fixture();
-  const result = await reviewSavedRun(pool, runId, config, async (_input, { onResponse }) => {
+  const result = await reviewSavedRun(pool, runId, () => config, async (_input, { onResponse }) => {
     await onResponse(observation);
     return { ...review, claims: [{ ...review.claims[0], evidenceIds: ["invented"] }, review.claims[1]] };
   });
@@ -104,7 +104,7 @@ it("retains charged usage when a review has invalid evidence references", async 
 it("records cancellation without accepting a late response", async () => {
   const runId = await fixture();
   const controller = new AbortController();
-  const result = await reviewSavedRun(pool, runId, config, async (_input, { onResponse }) => {
+  const result = await reviewSavedRun(pool, runId, () => config, async (_input, { onResponse }) => {
     await onResponse(observation);
     controller.abort();
     return review;
@@ -117,17 +117,17 @@ it("records cancellation without accepting a late response", async () => {
 it("does not call a reviewer for an unfinished investigation", async () => {
   const runId = await fixture([], false);
   let called = false;
-  await expect(reviewSavedRun(pool, runId, config, async () => { called = true; return review; })).rejects.toThrow(/completed|answer/i);
+  await expect(reviewSavedRun(pool, runId, () => config, async () => { called = true; return review; })).rejects.toThrow(/completed|answer/i);
   expect(called).toBe(false);
 });
 
 it("keeps repeated reviews as separate attempts and prevents overwriting a finished attempt", async () => {
   const runId = await fixture();
-  const generate = async (_input: ReviewInput, { onResponse }: { onResponse: (value: ReviewObservation) => Promise<void> }) => {
+  const generate = async (_input: unknown, { onResponse }: { onResponse: (value: ReviewObservation) => Promise<void> }) => {
     await onResponse(observation); return review;
   };
-  const first = await reviewSavedRun(pool, runId, config, generate);
-  const second = await reviewSavedRun(pool, runId, config, generate);
+  const first = await reviewSavedRun(pool, runId, () => config, generate);
+  const second = await reviewSavedRun(pool, runId, () => config, generate);
   expect(first.id).not.toBe(second.id);
   const store = createReviewStore(pool);
   await expect(store.finish(first.id, { status: "failed", error: "Overwrite" })).rejects.toThrow(/finished/);

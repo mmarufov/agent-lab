@@ -46,7 +46,7 @@ it("seeds fresh ordered case evidence and atomically reopens the saved answer an
   await pool.query("DELETE FROM lab_deployment_logs WHERE trial_id = $1", [trial.trialId]);
   expect((await createWebStore(pool).get(id)).outcome).toEqual(saved.outcomeReport);
   const reviews = createReviewStore(pool);
-  const review = await reviews.start(id, { modelId: "test/model", promptVersion: "test", schemaVersion: 1, system: "Assess prose.", settings: { maxOutputTokens: 1000, maxRetries: 0, timeoutMs: 1000, maxInputBytes: 65536 } });
+  const review = await reviews.start(id, { source: "simulated", modelId: "test/model", promptVersion: "test", schemaVersion: 1, system: "Assess prose.", settings: { maxOutputTokens: 1000, maxRetries: 0, timeoutMs: 1000, maxInputBytes: 65536 } });
   expect(Object.keys(review.input).sort()).toEqual(["answer", "deploymentId", "evidence", "task"]);
   expect(JSON.stringify(review.input)).not.toMatch(/recovered-startup|decisiveEvidenceIds|caseSnapshot|expected|outcomeReport/);
   await reviews.finish(review.id, { status: "cancelled", error: "Test cleanup." });

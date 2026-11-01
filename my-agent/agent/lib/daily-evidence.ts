@@ -25,6 +25,9 @@ export interface DailyEvidenceConfig {
 // Like getLogs, these functions know only the public HTTP contract. Reading
 // capture files and checking grants belong to the trusted lab service.
 
+/** One request's deadline: connecting, the response headers, and the whole body. */
+export const DAILY_TOOL_DEADLINE_MS = 5_000;
+
 /** One page of log lines recorded from Daily's containers during the configured capture. */
 export async function getDailyLogs(input: GetDailyLogsInput, config: DailyEvidenceConfig): Promise<GetDailyLogsOutput> {
   const parsed = getDailyLogsInputSchema.safeParse(input);
@@ -82,11 +85,10 @@ async function request<T extends { captureId: string; evidenceSha256: string }>(
   const url = endpoint(tool, path, config);
   for (const [key, value] of Object.entries(query)) if (value !== undefined) url.searchParams.set(key, String(value));
 
-  // One deadline covers connecting, the response headers, and the whole body.
-  const deadline = AbortSignal.timeout(5_000);
+  const deadline = AbortSignal.timeout(DAILY_TOOL_DEADLINE_MS);
   const signal = config.signal ? AbortSignal.any([deadline, config.signal]) : deadline;
   const stopped = () =>
-    deadline.aborted ? `${tool} timed out after 5 seconds.` : config.signal?.aborted ? `${tool} was cancelled.` : undefined;
+    deadline.aborted ? `${tool} timed out after ${DAILY_TOOL_DEADLINE_MS / 1000} seconds.` : config.signal?.aborted ? `${tool} was cancelled.` : undefined;
   let response: Response;
   try {
     response = await fetch(url, {

@@ -1,7 +1,14 @@
+import type { ReviewSource } from "@agent-lab/contracts";
 import { createPool } from "@agent-lab/lab/database";
 import { acquireExecution } from "@agent-lab/lab/jobs";
-import { reviewSavedRun } from "@agent-lab/lab/reviews";
-import { generateReview, reviewerConfig } from "../../my-agent/client/review";
+import { reviewSavedRun, type StartedReview } from "@agent-lab/lab/reviews";
+import { generateReview, reviewerConfigs } from "../../my-agent/client/review";
+
+/** The reviewer configuration for a run's source, with the LAB_REVIEW_MODEL override applied. */
+export function reviewerConfigFor(source: ReviewSource) {
+  const configuration = reviewerConfigs[source];
+  return { ...configuration, modelId: process.env.LAB_REVIEW_MODEL || configuration.modelId };
+}
 
 export async function runReview(
   pool: ReturnType<typeof createPool>,
@@ -9,7 +16,7 @@ export async function runReview(
   options: {
     signal?: AbortSignal;
     jobId?: string;
-    onCreated?: (id: string) => void;
+    onCreated?: (attempt: StartedReview) => void;
   } = {},
 ) {
   const lease = await acquireExecution(pool);
@@ -17,15 +24,11 @@ export async function runReview(
     lease.signal,
     ...(options.signal ? [options.signal] : []),
   ]);
-  const configuration = {
-    ...reviewerConfig,
-    modelId: process.env.LAB_REVIEW_MODEL || reviewerConfig.modelId,
-  };
   try {
     return await reviewSavedRun(
       pool,
       runId,
-      configuration,
+      reviewerConfigFor,
       async (input, request) => {
         if (
           !process.env.LAB_REVIEW_GATEWAY_API_KEY &&
@@ -36,10 +39,8 @@ export async function runReview(
             name: "GatewayAuthenticationError",
           });
         }
-        return generateReview(input, {
-          ...request,
-          modelId: configuration.modelId,
-        });
+        // request.configuration is the one saved with this attempt.
+        return generateReview(input, request);
       },
       { ...options, signal },
     );

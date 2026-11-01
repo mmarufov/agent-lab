@@ -93,6 +93,7 @@ test.beforeAll(async () => {
     message: "",
   });
   const config = {
+    source: "simulated" as const,
     modelId: "test/reviewer",
     system: "Review.",
     promptVersion: "ui-test-v1",
@@ -104,7 +105,7 @@ test.beforeAll(async () => {
       maxInputBytes: 65536,
     },
   };
-  await reviewSavedRun(pool, runId, config, async (_input, { onResponse }) => {
+  await reviewSavedRun(pool, runId, () => config, async (_input, { onResponse }) => {
     await onResponse({
       responseId: null,
       resolvedModelId: "test/reviewer",

@@ -1,5 +1,9 @@
 import { createPool } from "@agent-lab/lab/database";
+import { describeReview } from "@agent-lab/lab/review-report";
 import { runReview } from "./lib/review";
+
+// pnpm lab:review <run-id|latest>: one separate model review of a saved
+// simulated or Daily investigation. It makes one real model request.
 
 async function main() {
   const [runId, ...extra] = process.argv.slice(2);
@@ -12,19 +16,18 @@ async function main() {
   try {
     const saved = await runReview(pool, runId, {
       signal: controller.signal,
-      onCreated: (id) => console.log(`Review: ${id}\nRead later: pnpm lab review ${id}`),
+      onCreated: ({ id, runId, source, input, configuration }) => {
+        const records = "deploymentId" in input ? input.evidence.length : input.evidence.length + input.untimedEvidence.length;
+        const bytes = Buffer.byteLength(JSON.stringify(input), "utf8");
+        console.log(`Review: ${id}\nRead later: pnpm lab review ${id}`);
+        console.log(`Reviewing ${source === "daily_capture" ? "recorded Daily" : "simulated"} run ${runId}: ${records} retrieved record(s), ${bytes} of ${configuration.settings.maxInputBytes} bytes.`);
+        console.log(`One request to ${configuration.modelId} with prompt ${configuration.promptVersion}; no tools, no retries, ${configuration.settings.timeoutMs / 1000}-second limit.\n`);
+      },
     });
-    console.log(`Run: ${saved.runId}\nStatus: ${saved.status}`);
-    if (saved.review) console.log(JSON.stringify(saved.review, null, 2));
-    if (saved.observation) {
-      const usage = saved.observation.usage;
-      console.log(`Review tokens: ${usage.inputTokens ?? "unknown"} input, ${usage.outputTokens ?? "unknown"} output.`);
-      console.log(`Reported review cost: ${usage.costUsd === null ? "unavailable" : `$${usage.costUsd.toFixed(6)}`}.`);
-    }
+    console.log(describeReview(saved).join("\n"));
     const failedChecks = Object.entries(saved.evidenceCheck.checks).filter(([, check]) => check.status === "fail").map(([name]) => name);
     if (failedChecks.length) console.log(`Evidence checks still failed: ${failedChecks.join(", ")}. The review cannot override them.`);
     if (saved.error) console.error(saved.error);
-    console.log("Model judgments are advisory; review completion is not proof that the diagnosis is correct.");
     if (saved.status !== "completed" || failedChecks.length) process.exitCode = 1;
   } finally {
     process.removeListener("SIGINT", interrupt);
