@@ -29,7 +29,7 @@ test("shows outcome failure separately from valid evidence and preserves it thro
   await expect(outcome).toContainText("Failed");
   await expect(outcome).toContainText("missing_configuration");
   await expect(outcome).toContainText("other");
-  await expect(page.getByRole("region", { name: "Evidence checks" })).toContainText("5 / 5 passed");
+  await expect(page.getByRole("region", { name: "Evidence checks" })).toContainText("6 / 6 passed");
   await outcome.getByRole("button", { name: decisiveId, exact: true }).click();
   await expect(page.locator(".evidence-log[data-selected=true]")).toContainText("DATABASE_URL is missing");
   await page.reload();
@@ -48,6 +48,9 @@ test("selects one named case and sends only that selector on explicit launch", a
   await page.route("**/api/jobs", (route) => { submitted = route.request().postDataJSON(); return route.fulfill({ status: 503, json: { error: "Test submission intercepted; no model work." } }); });
   await page.goto("/runs");
   await page.getByRole("button", { name: "New investigation" }).click();
+  // Daily recordings are the default source; the four simulated cases stay one choice away.
+  await page.getByRole("combobox", { name: "Source", exact: true }).click();
+  await page.getByRole("option", { name: /Simulated case/ }).click();
   await page.getByRole("combobox", { name: "Case", exact: true }).click();
   await expect(page.getByRole("option")).toHaveCount(4);
   await page.getByRole("option", { name: "Recovered startup", exact: true }).click();

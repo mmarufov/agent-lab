@@ -82,7 +82,7 @@ it("shows failure and unmatched results without presenting them as retrieved evi
   ).find((i) => i.kind === "tool")!;
   expect(failed.status).toBe("failed");
   expect(failed.tool?.results[0]).toMatchObject({
-    logs: null,
+    recordKeys: null,
     error: expect.any(String),
   });
   const unmatched = projectActivity(

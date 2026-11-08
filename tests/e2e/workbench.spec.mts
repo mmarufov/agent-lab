@@ -161,7 +161,12 @@ test("Safari timestamp hydration: saved runs and reviews", async ({ baseURL }) =
   try {
     const page = await browser.newPage({ baseURL, timezoneId: "Asia/Tokyo" });
     const errors: string[] = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    // WebKit reports a link prefetch that page.goto aborts as an access-control
+    // error. Only that exact message is ignored; every other page error fails.
+    const abortedPrefetch = /\/runs\/[0-9a-f-]{36}\?_rsc=\S+ due to access control checks\.$/;
+    page.on("pageerror", (error) => {
+      if (!abortedPrefetch.test(error.message)) errors.push(error.message);
+    });
     page.on("console", (message) => {
       if (message.type() === "error" && /hydrat/i.test(message.text()))
         errors.push(message.text());

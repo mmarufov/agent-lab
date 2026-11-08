@@ -81,9 +81,10 @@ it("projects received evidence without leaking the runner's private configuratio
   const view = await web.get(id);
   expect(view.checks.citations.status).toBe("pass");
   expect(view.evidence[0]).toMatchObject({
-    callId: "call",
-    log: { id: "log-17", message: "DATABASE_URL is missing." },
+    id: "log-17",
+    receipts: [{ toolName: "get_logs", callId: "call" }],
   });
+  expect(view.records[view.evidence[0].key]).toMatchObject({ type: "deployment_log", id: "log-17", message: "DATABASE_URL is missing." });
   expect(view.usage.costUsd).toBeNull();
   expect(view.reviewEligible).toBe(true);
   for (const secret of [
@@ -101,7 +102,7 @@ it("projects received evidence without leaking the runner's private configuratio
   expect(page.items.some((run) => run.id === id)).toBe(true);
   expect(
     page.items.every(
-      (run) => run.deploymentId === "B" && run.status === "completed",
+      (run) => run.source === "simulated" && run.deploymentId === "B" && run.status === "completed",
     ),
   ).toBe(true);
   expect(JSON.stringify(page)).not.toContain("PRIVATE_CONFIGURATION");

@@ -9,6 +9,10 @@ export default async function Runs({
 }) {
   await requireLocalPage();
   const query = await searchParams;
+  const source =
+    query.source === "daily_capture" || query.source === "simulated"
+      ? query.source
+      : undefined;
   const deploymentId =
     typeof query.deployment === "string" &&
     ["A", "B", "C"].includes(query.deployment)
@@ -24,10 +28,11 @@ export default async function Runs({
     recordIdSchema.safeParse(query.cursor).success
       ? query.cursor
       : undefined;
-  const data = await webStore().list({ deploymentId, status, cursor });
+  const data = await webStore().list({ source, deploymentId, status, cursor });
   return (
     <RunsList
       initial={data}
+      source={source ?? "all"}
       deployment={deploymentId ?? "all"}
       status={status ?? "all"}
     />

@@ -1,20 +1,34 @@
 "use client";
+import { useState } from "react";
 import { FileText, Check } from "lucide-react";
 import type { RunView } from "@agent-lab/lab/web";
 import { Empty } from "./display";
+import { RecordDetails, RecordLine } from "./records";
+
+const PAGE = 25;
+
+/** Every received record once, with the tool calls that returned it. The selected one shows in full. */
 export function EvidencePanel({
   run,
   selected,
   selectedEvent,
-  onCitation,
+  onSelect,
   onViewTrace,
 }: {
   run: RunView;
   selected: string | null;
   selectedEvent: string | null;
-  onCitation: (id: string, eventId?: string) => void;
-  onViewTrace: () => void;
+  onSelect: (id: string, resultEventId: string) => void;
+  onViewTrace: (resultEventId: string) => void;
 }) {
+  const [shown, setShown] = useState(PAGE);
+  const isSelected = (entry: RunView["evidence"][number]) =>
+    entry.id === selected &&
+    (!selectedEvent || entry.receipts.some((receipt) => receipt.resultEventId === selectedEvent));
+  const selectedIndex = run.evidence.findIndex(isSelected);
+  const visible = run.evidence.slice(0, Math.max(shown, selectedIndex + 1));
+  const remaining = run.evidence.length - visible.length;
+  const daily = run.source === "daily_capture";
   return (
     <div className="evidence-panel">
       <div className="evidence-header">
@@ -25,59 +39,54 @@ export function EvidencePanel({
             {run.evidence.length.toString().padStart(2, "0")}
           </span>
         </h2>
-        <p>Logs returned to this investigation.</p>
+        <p>{daily ? "Records the investigator's tool calls returned, once each." : "Logs returned to this investigation."}</p>
       </div>
       {run.evidence.length === 0 ? (
-        <Empty title="No received logs">
+        <Empty title={daily ? "No received records" : "No received logs"}>
           {run.status === "running"
             ? "Tool results will appear here as they are recorded."
-            : "No log records were retrieved. This does not establish that the deployment is healthy."}
+            : daily
+              ? "No records were retrieved. This does not establish that Daily was healthy."
+              : "No log records were retrieved. This does not establish that the deployment is healthy."}
         </Empty>
       ) : (
-        run.evidence.map((item, index) => (
-          <div
-            key={`${item.resultEventId}:${item.log.id}:${index}`}
-            className="evidence-log"
-            data-selected={
-              selected === item.log.id &&
-              (!selectedEvent || selectedEvent === item.resultEventId)
-            }
-          >
-            <div className="log-meta">
-              <span>{String(index + 1).padStart(2, "0")}</span>
-              <button
-                onClick={() => onCitation(item.log.id, item.resultEventId)}
-                aria-label={`Inspect ${item.log.id}`}
-              >
-                {item.log.id}
-              </button>
-              <span className="log-level" data-level={item.log.level}>
-                {item.log.level}
-              </span>
-            </div>
-            <p>{item.log.message}</p>
-            {selected === item.log.id &&
-              (!selectedEvent || selectedEvent === item.resultEventId) && (
-                <div className="receipt">
-                  <dl>
-                    <dt>Tool</dt>
-                    <dd>get_logs</dd>
-                    <dt>Input</dt>
-                    <dd>deploymentId: {item.log.deploymentId}</dd>
-                    <dt>Call ID</dt>
-                    <dd>{item.callId}</dd>
-                    <dt>Result ID</dt>
-                    <dd>{item.resultEventId}</dd>
-                  </dl>
-                  <button className="text-link mt-3" onClick={onViewTrace}>
-                    View in activity
+        visible.map((entry) => {
+          const record = run.records[entry.key];
+          const open = isSelected(entry);
+          return (
+            <div
+              key={entry.key}
+              className="evidence-log"
+              data-selected={open}
+              data-record-type={record.type}
+            >
+              <RecordLine
+                record={record}
+                id={
+                  <button
+                    className="record-id"
+                    onClick={() => onSelect(entry.id, entry.receipts[0].resultEventId)}
+                    aria-label={`Inspect ${entry.id}`}
+                    aria-pressed={open}
+                  >
+                    {entry.id}
                   </button>
-                </div>
+                }
+              />
+              {entry.receipts.length > 1 && !open && (
+                <p className="record-facts">Returned by {entry.receipts.length} tool calls</p>
               )}
-          </div>
-        ))
+              {open && <RecordDetails record={record} receipts={entry.receipts} onViewTrace={onViewTrace} />}
+            </div>
+          );
+        })
       )}
-      {selected && !run.evidence.some((item) => item.log.id === selected) && (
+      {remaining > 0 && (
+        <button className="show-more evidence-more" onClick={() => setShown(visible.length + PAGE)}>
+          Show {Math.min(PAGE, remaining)} more of {remaining}
+        </button>
+      )}
+      {selected && selectedIndex < 0 && (
         <p className="notice notice-error">
           {selected} was not found in the received evidence.
         </p>
@@ -89,7 +98,7 @@ export function EvidencePanel({
       )}
       <div className="evidence-bottom">
         <Check size={11} />
-        From recorded tool results · simulated data
+        {daily ? `From recorded tool results · capture ${run.captureId}` : "From recorded tool results · simulated data"}
       </div>
     </div>
   );

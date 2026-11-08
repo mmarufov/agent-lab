@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { createPool } from "@agent-lab/lab/database";
+import type { DailyRecoveryCase } from "@agent-lab/lab/daily-recovery";
 import { dailyEvidenceResponse, type DailyEvidenceTool } from "@agent-lab/lab/daily-tools";
 import { startInvestigator, type InvestigatorSettings } from "../../my-agent/client/investigate";
 
@@ -81,10 +82,25 @@ async function close(server: ReturnType<typeof createServer>) {
   await new Promise((resolve) => server.close(resolve));
 }
 
-export async function createInvestigatorFixture() {
+/** evals/daily/recovery-case.ts for a fixture: the same export, holding a test case instead of the real one. */
+const caseModule = (evalCase: DailyRecoveryCase) =>
+  `// Written by scripts/lib/investigator-fixture.ts for a test. Not the real case.\n` +
+  `export const dailyRecoveryCase = ${JSON.stringify(evalCase, null, 2)};\n`;
+
+/**
+ * With evalCase, the fixture also holds the real evals/ directory and client/
+ * files, so `eve eval daily/recovery` runs there with that case in place of
+ * the real one: a labeled synthetic recording's ID, hashes, and expectation.
+ */
+export async function createInvestigatorFixture(options: { evalCase?: DailyRecoveryCase } = {}) {
   const appDir = await mkdtemp(join(tmpdir(), "investigator-fixture-"));
   await cp(join(myAgent, "agent"), join(appDir, "agent"), { recursive: true });
   await cp(join(myAgent, "prompts"), join(appDir, "prompts"), { recursive: true });
+  if (options.evalCase) {
+    await cp(join(myAgent, "evals"), join(appDir, "evals"), { recursive: true });
+    await cp(join(myAgent, "client"), join(appDir, "client"), { recursive: true });
+    await writeFile(join(appDir, "evals/daily/recovery-case.ts"), caseModule(options.evalCase));
+  }
   await rename(join(appDir, "agent/agent.ts"), join(appDir, "agent/lib/configured-agent.ts"));
   await writeFile(join(appDir, "agent/agent.ts"), mockAgent);
   await writeFile(
@@ -117,6 +133,15 @@ export async function createInvestigatorFixture() {
     reply(next: typeof respond) {
       calls.length = 0;
       respond = next;
+    },
+    /**
+     * Added to the eve eval process's environment: where the model double
+     * listens, and NODE_ENV unset (see start).
+     */
+    evalEnv: { AGENT_LAB_MODEL_DOUBLE_URL: modelUrl, NODE_ENV: undefined },
+    /** Replace the case this fixture's eval reads. */
+    async setCase(evalCase: DailyRecoveryCase) {
+      await writeFile(join(appDir, "evals/daily/recovery-case.ts"), caseModule(evalCase));
     },
     /** startInvestigator for the fixture app on a free port. */
     async start(settings: InvestigatorSettings, signal: AbortSignal) {

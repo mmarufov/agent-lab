@@ -12,7 +12,8 @@ import { createWebStore } from "../src/web";
 import { CLEAN_CAPTURE_ID, capturesDir, log, removeCaptureDirs, writeCapture } from "./daily-capture-fixture";
 
 // Daily capture runs in the shared run and event tables: what the database
-// enforces for each source, and how simulated-only readers refuse them.
+// enforces for each source, how simulated-only readers refuse them, and how
+// the workbench reads them.
 
 const admin = createPool();
 const schema = `daily_runs_${randomUUID().replaceAll("-", "")}`;
@@ -76,7 +77,8 @@ describe("a Daily capture run", () => {
     expect((await runs.getAny(id)).source).toBe("daily_capture");
     await expect(runs.get(id)).rejects.toThrow(UnsupportedRunSourceError);
     await expect(runs.get(id)).rejects.toThrow(`read it with pnpm lab run ${id}`);
-    await expect(createWebStore(pool).get(id)).rejects.toThrow(UnsupportedRunSourceError);
+    // The workbench reads both sources.
+    expect(await createWebStore(pool).get(id)).toMatchObject({ id, source: "daily_capture", captureId: CLEAN_CAPTURE_ID, status: "running" });
     // The review store reads Daily runs, but only a finished one, with a Daily reviewer configuration.
     const reviewer = {
       modelId: "test/reviewer", promptVersion: "test", schemaVersion: 1 as const, system: "Review.",
@@ -87,20 +89,29 @@ describe("a Daily capture run", () => {
     expect((await pool.query("SELECT count(*)::int AS n FROM lab_investigation_reviews WHERE run_id = $1", [id])).rows[0].n).toBe(0);
   });
 
-  it("stays out of the workbench list, and a review request for it is invalid", async () => {
+  it("is listed beside simulated runs, filtered by source, and refused review and coverage until it completes", async () => {
     const id = await daily();
     const { trialId } = await createTrial(pool);
     const simulated = await runs.create({ trialId, deploymentId: "B", task: "Investigate B.", instructions: "Simulated.", agentConfigSource: "{}" });
-    const listed = (await createWebStore(pool).list()).items.map((item) => item.id);
-    expect(listed).toContain(simulated);
-    expect(listed).not.toContain(id);
+    const web = createWebStore(pool);
+    const listed = (await web.list()).items.map((item) => item.id);
+    expect(listed).toEqual(expect.arrayContaining([id, simulated]));
+    expect((await web.list({ source: "daily_capture" })).items.map((item) => item.id)).toContain(id);
+    expect((await web.list({ source: "daily_capture" })).items.every((item) => item.source === "daily_capture")).toBe(true);
+    expect((await web.list({ source: "simulated" })).items.map((item) => item.id)).not.toContain(id);
+    expect((await web.list()).items.find((item) => item.id === id)).toMatchObject({
+      source: "daily_capture", captureId: CLEAN_CAPTURE_ID, recordedAt: "2026-10-22T05:01:38.000Z", coverage: { state: "waiting", missedFacts: [] },
+    });
     const jobs = createJobStore(pool);
     const owner = randomUUID();
     await jobs.register(owner);
     try {
-      const submitted = jobs.submit({ requestId: randomUUID(), kind: "review", runId: id });
-      await expect(submitted).rejects.toThrow(JobError);
-      await expect(submitted).rejects.toMatchObject({ code: "invalid", message: expect.stringContaining("recorded Daily capture") });
+      const review = jobs.submit({ requestId: randomUUID(), kind: "review", runId: id });
+      await expect(review).rejects.toThrow(JobError);
+      await expect(review).rejects.toMatchObject({ code: "invalid", message: expect.stringContaining("completed answer") });
+      await expect(jobs.submit({ requestId: randomUUID(), kind: "coverage", runId: id })).rejects.toMatchObject({ code: "invalid", message: expect.stringContaining("completed investigation") });
+      await expect(jobs.submit({ requestId: randomUUID(), kind: "coverage", runId: simulated })).rejects.toMatchObject({ code: "invalid", message: expect.stringContaining("recorded Daily investigations only") });
+      expect((await pool.query("SELECT count(*)::int AS n FROM lab_execution_jobs")).rows[0].n).toBe(0);
     } finally {
       await jobs.unregister(owner);
     }

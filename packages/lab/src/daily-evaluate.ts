@@ -7,6 +7,7 @@ import {
   getDailyLogsInputSchema,
   getDailyLogsOutputSchema,
 } from "@agent-lab/contracts/daily-evidence";
+import { dailyAvailabilityAnswerSchema } from "@agent-lab/contracts/daily-availability";
 import { dailyInvestigationAnswerSchema } from "@agent-lab/contracts/daily-investigation";
 
 // Which recorded records a Daily investigation actually received, and whether
@@ -14,6 +15,8 @@ import { dailyInvestigationAnswerSchema } from "@agent-lab/contracts/daily-inves
 // or model. It says nothing about whether the diagnosis is right. The evidence
 // checker and the review of a Daily run both read the events through
 // readDailyEvidence, so a reviewer sees exactly the records the report counts.
+// The Daily recovery evaluation reads the same events with the same rules
+// through readDailyAvailabilityEvidence, which validates its extended answer.
 
 export interface DailyEvidenceRun {
   id: string;
@@ -27,7 +30,7 @@ export interface DailyEvidenceRun {
 
 type CheckStatus = "pass" | "fail" | "not_evaluated";
 type DailyRecord = DailyApplicationLog | DailyHttpObservation;
-type DailyTool = "get_daily_logs" | "get_daily_http_observations";
+export type DailyTool = "get_daily_logs" | "get_daily_http_observations";
 
 /** Where one record came from: the tool call and the request/result events that carried it. */
 export interface ReceivedRecord {
@@ -46,11 +49,20 @@ const object = (value: unknown): Record<string, unknown> | undefined =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 const nonempty = (value: unknown): value is string => typeof value === "string" && value.length > 0;
 
-/** A successful result's records, or why the result cannot count as evidence. */
-function readPage(toolName: DailyTool, rawInput: unknown, rawOutput: unknown, run: DailyEvidenceRun) {
+/**
+ * One successful Daily tool result's page, or why it cannot count as evidence:
+ * the input and output must match the tool's schemas, every record must match
+ * the requested filters, and the page must come from this run's capture and
+ * evidence file. The evidence checker and the workbench's activity view share it.
+ */
+export function readDailyToolPage(
+  toolName: DailyTool,
+  rawInput: unknown,
+  rawOutput: unknown,
+  run: { captureId: string; evidenceSha256: string },
+): { problem: string } | { records: DailyRecord[]; oversized: { id: string; bytes: number }[]; nextCursor: string | null } {
   let records: DailyRecord[];
-  let oversized: string[];
-  let source: { captureId: string; evidenceSha256: string };
+  let page: { captureId: string; evidenceSha256: string; oversized: { id: string; bytes: number }[]; nextCursor: string | null };
   if (toolName === "get_daily_logs") {
     const input = getDailyLogsInputSchema.safeParse(rawInput);
     const output = getDailyLogsOutputSchema.safeParse(rawOutput);
@@ -60,8 +72,7 @@ function readPage(toolName: DailyTool, rawInput: unknown, rawOutput: unknown, ru
       (!input.data.service || log.service === input.data.service) && (!needle || log.message.toLowerCase().includes(needle));
     if (!output.data.logs.every(matches)) return { problem: "get_daily_logs returned lines outside its filters" };
     records = output.data.logs;
-    oversized = output.data.oversized.map((entry) => entry.id);
-    source = output.data;
+    page = output.data;
   } else {
     const input = getDailyHttpObservationsInputSchema.safeParse(rawInput);
     const output = getDailyHttpObservationsOutputSchema.safeParse(rawOutput);
@@ -69,12 +80,11 @@ function readPage(toolName: DailyTool, rawInput: unknown, rawOutput: unknown, ru
     if (input.data.path && output.data.observations.some((observation) => observation.path !== input.data.path))
       return { problem: "get_daily_http_observations returned another path" };
     records = output.data.observations;
-    oversized = output.data.oversized.map((entry) => entry.id);
-    source = output.data;
+    page = output.data;
   }
-  if (source.captureId !== run.captureId || source.evidenceSha256 !== run.evidenceSha256)
-    return { problem: `records from capture ${source.captureId} (evidence ${source.evidenceSha256.slice(0, 12)}), not this run's` };
-  return { records, oversized };
+  if (page.captureId !== run.captureId || page.evidenceSha256 !== run.evidenceSha256)
+    return { problem: `records from capture ${page.captureId} (evidence ${page.evidenceSha256.slice(0, 12)}), not this run's` };
+  return { records, oversized: page.oversized, nextCursor: page.nextCursor };
 }
 
 interface Call {
@@ -89,7 +99,7 @@ interface Call {
   oversized?: string[];
 }
 
-const DAILY_TOOLS: readonly string[] = ["get_daily_logs", "get_daily_http_observations"];
+export const DAILY_TOOLS: readonly string[] = ["get_daily_logs", "get_daily_http_observations"];
 
 /** The daily-evidence-v1 report for a run. */
 export function evaluateDailyRun(run: DailyEvidenceRun) {
@@ -109,6 +119,37 @@ export function evaluateDailyRun(run: DailyEvidenceRun) {
  * report names it as ambiguous and fails the trace.
  */
 export function readDailyEvidence(run: DailyEvidenceRun) {
+  const { report, records } = readEvidence(run, dailyInvestigationAnswerSchema, "the Daily answer schema");
+  return { report, records };
+}
+
+/**
+ * The same daily-evidence-v1 checks for the evaluation-only availability
+ * answer: the saved answer and the last recorded structured result must both
+ * match dailyAvailabilityAnswerSchema and each other. Also returns that
+ * answer, when its citations could be checked, and the citation check itself,
+ * so role-specific citations are judged by exactly the same rules.
+ */
+export function readDailyAvailabilityEvidence(run: DailyEvidenceRun) {
+  return readEvidence(run, dailyAvailabilityAnswerSchema, "the Daily availability answer schema");
+}
+
+interface AnswerSchema<Answer> {
+  safeParse(value: unknown): { success: true; data: Answer } | { success: false };
+}
+
+/** Which of these cited IDs the run's successful results returned, and why each other one cannot count. */
+export interface CitationCheck {
+  /** Distinct cited IDs, in first-cited order. */
+  citedIds: string[];
+  missingIds: string[];
+  oversizedOnlyIds: string[];
+  inventedIds: string[];
+  ambiguousIds: string[];
+  problems: string[];
+}
+
+function readEvidence<Answer extends { evidenceIds: string[] }>(run: DailyEvidenceRun, answerSchema: AnswerSchema<Answer>, schemaName: string) {
   const issues: string[] = [];
   const events: InvestigationEvent[] = [];
   for (const raw of run.events) {
@@ -124,15 +165,15 @@ export function readDailyEvidence(run: DailyEvidenceRun) {
     }
   }
   const finalData = object(events[answerIndex]?.data);
-  const storedAnswer = dailyInvestigationAnswerSchema.safeParse(run.answer);
-  const streamedAnswer = dailyInvestigationAnswerSchema.safeParse(finalData?.result);
+  const storedAnswer = answerSchema.safeParse(run.answer);
+  const streamedAnswer = answerSchema.safeParse(finalData?.result);
   const answerMatches =
     storedAnswer.success && streamedAnswer.success && nonempty(finalData?.turnId) && isDeepStrictEqual(storedAnswer.data, streamedAnswer.data);
   const completed = run.status === "completed";
   const answer = !completed
     ? check("not_evaluated", "The run has no completed answer to evaluate.")
     : !storedAnswer.success
-      ? check("fail", "The saved answer is missing or does not match the Daily answer schema.")
+      ? check("fail", `The saved answer is missing or does not match ${schemaName}.`)
       : !answerMatches
         ? check("fail", "The saved answer does not match the last recorded structured result in the trace.")
         : check("pass", "The saved answer matches the recorded structured result.");
@@ -212,14 +253,14 @@ export function readDailyEvidence(run: DailyEvidenceRun) {
       call.failed = true;
       continue;
     }
-    const page = readPage(call.toolName, call.action.input, result.output, run);
+    const page = readDailyToolPage(call.toolName, call.action.input, result.output, run);
     if (data.status !== "completed" || (result.isError !== undefined && result.isError !== false) || "problem" in page) {
       call.invalid = true;
       issues.push(`${event.meta.id}: ${"problem" in page ? page.problem : "the result is not a completed tool result"}.`);
       continue;
     }
     call.records = page.records;
-    call.oversized = page.oversized;
+    call.oversized = page.oversized.map((entry) => entry.id);
   }
 
   const successful = [...calls.values()].filter((call) => !call.invalid && call.records);
@@ -246,17 +287,21 @@ export function readDailyEvidence(run: DailyEvidenceRun) {
   }
   if (ambiguous.size) issues.push(`Conflicting contents for record ID(s): ${[...ambiguous].join(", ")}.`);
 
+  const checkCitations = (ids: readonly string[]): CitationCheck => {
+    const citedIds = [...new Set(ids)];
+    const missingIds = citedIds.filter((id) => !contents.has(id));
+    const oversizedOnlyIds = missingIds.filter((id) => oversized.has(id));
+    const inventedIds = missingIds.filter((id) => !oversized.has(id));
+    const ambiguousIds = citedIds.filter((id) => ambiguous.has(id));
+    const problems: string[] = [];
+    if (inventedIds.length) problems.push(`Cited IDs that no successful Daily tool result returned: ${inventedIds.join(", ")}.`);
+    if (oversizedOnlyIds.length)
+      problems.push(`Cited IDs listed only as oversized, so their contents were never returned: ${oversizedOnlyIds.join(", ")}.`);
+    if (ambiguousIds.length) problems.push(`Cited IDs with conflicting returned contents: ${ambiguousIds.join(", ")}.`);
+    return { citedIds, missingIds, oversizedOnlyIds, inventedIds, ambiguousIds, problems };
+  };
   const canCheckCitations = completed && answerMatches;
-  const citedIds = canCheckCitations ? [...new Set(storedAnswer.data.evidenceIds)] : [];
-  const missingIds = citedIds.filter((id) => !contents.has(id));
-  const oversizedOnlyIds = missingIds.filter((id) => oversized.has(id));
-  const inventedIds = missingIds.filter((id) => !oversized.has(id));
-  const ambiguousCitations = citedIds.filter((id) => ambiguous.has(id));
-  const problems: string[] = [];
-  if (inventedIds.length) problems.push(`Cited IDs that no successful Daily tool result returned: ${inventedIds.join(", ")}.`);
-  if (oversizedOnlyIds.length)
-    problems.push(`Cited IDs listed only as oversized, so their contents were never returned: ${oversizedOnlyIds.join(", ")}.`);
-  if (ambiguousCitations.length) problems.push(`Cited IDs with conflicting returned contents: ${ambiguousCitations.join(", ")}.`);
+  const { citedIds, missingIds, oversizedOnlyIds, problems } = checkCitations(canCheckCitations ? storedAnswer.data.evidenceIds : []);
 
   const report = {
     runId: run.id,
@@ -298,5 +343,11 @@ export function readDailyEvidence(run: DailyEvidenceRun) {
       "Diagnosis correctness is not assessed. These checks establish only where cited records came from, not that they support the diagnosis.",
     ),
   };
-  return { report, records: [...contents.values()] };
+  return {
+    report,
+    records: [...contents.values()],
+    /** The saved answer, only when it matches the last recorded result of a completed run, so its citations could be checked. */
+    answer: canCheckCitations ? storedAnswer.data : undefined,
+    checkCitations,
+  };
 }

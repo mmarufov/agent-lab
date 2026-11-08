@@ -7,10 +7,18 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import {
+  Empty as EmptyRoot,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
 export function Status({ value, label }: { value: string; label?: string }) {
-  const good = ["completed", "pass", "supported"].includes(value),
-    bad = ["failed", "fail", "unsupported", "interrupted"].includes(value),
-    active = ["running", "queued"].includes(value),
+  const good = ["completed", "pass", "supported", "covered"].includes(value),
+    bad = ["failed", "fail", "unsupported", "interrupted", "missed", "check_failed", "mismatch", "missing"].includes(value),
+    active = ["running", "queued", "checking"].includes(value),
     uncertain = ["uncertain", "warn"].includes(value);
   const Icon = good
     ? Check
@@ -59,32 +67,52 @@ export function tokens(input: number | null, output: number | null) {
   if (input === null && output === null) return "Unavailable";
   return `${input?.toLocaleString("en-US") ?? "Unknown"} in / ${output?.toLocaleString("en-US") ?? "Unknown"} out`;
 }
+const months = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 export function timestamp(value: string) {
   // Intl's punctuation differs between Node and Safari even with an explicit
   // locale/timezone. Keep SSR and the first browser render byte-for-byte equal.
   const date = new Date(value);
-  const month = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-  ][date.getUTCMonth()];
+  const month = months[date.getUTCMonth()];
   const hour = date.getUTCHours();
   const minute = String(date.getUTCMinutes()).padStart(2, "0");
   return `${month} ${date.getUTCDate()}, ${hour % 12 || 12}:${minute} ${hour < 12 ? "AM" : "PM"}`;
 }
+/** A recording's date and 24-hour UTC time, such as "Oct 22, 2026, 05:01:38 UTC". Same reason as timestamp. */
+export function recordedAt(value: string) {
+  const date = new Date(value);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${months[date.getUTCMonth()]} ${date.getUTCDate()}, ${date.getUTCFullYear()}, ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())} UTC`;
+}
+/** The time of day of an RFC 3339 timestamp, to the millisecond, in UTC. */
+export function clock(value: string | null) {
+  if (!value) return "No timestamp";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : `${date.toISOString().slice(11, 23)} UTC`;
+}
 export function Empty({
   title,
   children,
+  action,
 }: {
   title: string;
   children: React.ReactNode;
+  action?: React.ReactNode;
 }) {
   return (
-    <div className="empty-state">
-      <span className="empty-glyph" aria-hidden="true">
-        [ · ]
-      </span>
-      <h2>{title}</h2>
-      <p>{children}</p>
-    </div>
+    <EmptyRoot className="empty-state">
+      <EmptyHeader>
+        <EmptyMedia className="empty-glyph" aria-hidden="true">
+          [ · ]
+        </EmptyMedia>
+        <EmptyTitle className="empty-title">
+          <h2>{title}</h2>
+        </EmptyTitle>
+        <EmptyDescription className="empty-description">{children}</EmptyDescription>
+      </EmptyHeader>
+      {action && <EmptyContent>{action}</EmptyContent>}
+    </EmptyRoot>
   );
 }

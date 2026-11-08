@@ -6,11 +6,10 @@ import type { DailyApplicationLog, DailyCaptureEvidence } from "@agent-lab/contr
 import type { DailyInvestigationAnswer } from "@agent-lab/contracts/daily-investigation";
 import { createCaptureAccess } from "../src/capture-access";
 import { createPool } from "../src/database";
-import { createTrial } from "../src/fixtures";
 import { createJobStore, JobError } from "../src/jobs";
 import { migrate } from "../src/migrate";
 import { createReviewStore, reviewSavedRun, type ReviewRequestOptions } from "../src/reviews";
-import { createRunStore, UnsupportedRunSourceError } from "../src/runs";
+import { createRunStore } from "../src/runs";
 import { createWebStore } from "../src/web";
 import { bypassingTriggers } from "./administrator";
 import { CLEAN_CAPTURE_ID, capturesDir, incidentEvidence, removeCaptureDirs, writeCapture } from "./daily-capture-fixture";
@@ -363,21 +362,25 @@ describe("failed Daily attempts stay saved and explicit", () => {
   }, 30_000);
 });
 
-it("a completed Daily run stays out of the simulated-only workbench routes", async () => {
+it("a completed Daily run is reviewable from the workbench, and admission refuses a record that no longer verifies", async () => {
   const id = await dailyRun(investigation());
-  const { trialId } = await createTrial(pool);
-  const simulated = await runs.create({ trialId, deploymentId: "B", task: "Investigate B.", instructions: "Simulated.", agentConfigSource: "{}" });
-  await expect(createWebStore(pool).get(id)).rejects.toThrow(UnsupportedRunSourceError);
-  const listed = (await createWebStore(pool).list()).items.map((item) => item.id);
-  expect(listed).toContain(simulated);
-  expect(listed).not.toContain(id);
+  const view = await createWebStore(pool).get(id);
+  expect(view).toMatchObject({ source: "daily_capture", status: "completed", reviewEligible: true, reviewBlocked: null });
   const jobs = createJobStore(pool);
   const owner = randomUUID();
   await jobs.register(owner);
   try {
-    const submitted = jobs.submit({ requestId: randomUUID(), kind: "review", runId: id });
-    await expect(submitted).rejects.toThrow(JobError);
-    await expect(submitted).rejects.toMatchObject({ code: "invalid", message: expect.stringContaining("recorded Daily capture") });
+    const job = await jobs.submit({ requestId: randomUUID(), kind: "review", runId: id });
+    expect(job).toMatchObject({ kind: "review", runId: id, status: "queued", scheduledBy: null });
+    await jobs.finish(job.id, "cancelled", "Test cleanup.");
+    // A record changed after sealing cannot be reviewed again.
+    const changed = await dailyRun(investigation());
+    await bypassingTriggers(pool, "lab_investigation_runs", () =>
+      pool.query("UPDATE lab_investigation_runs SET answer = jsonb_set(answer, '{diagnosis}', '\"Edited.\"') WHERE id = $1", [changed]));
+    const refused = jobs.submit({ requestId: randomUUID(), kind: "review", runId: changed });
+    await expect(refused).rejects.toThrow(JobError);
+    await expect(refused).rejects.toMatchObject({ code: "invalid", message: expect.stringContaining("integrity fingerprint") });
+    expect(await createWebStore(pool).get(changed)).toMatchObject({ reviewEligible: false, integrity: { status: "mismatch" } });
   } finally {
     await jobs.unregister(owner);
   }

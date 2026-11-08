@@ -6,6 +6,8 @@ export interface Job {
   reviewId: string | null;
   error: string | null;
   cancelRequested: boolean;
+  /** The submitted command; read only to describe the operation. */
+  command?: { kind: string; source?: string };
 }
 export interface Runner {
   busy: boolean;

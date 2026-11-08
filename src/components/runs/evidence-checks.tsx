@@ -8,29 +8,53 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Status } from "./display";
-const labels = {
-  execution: "Investigation completed",
-  answer: "Saved answer matches trace",
-  toolTrace: "Tool requests and results match",
-  retrieval: "Deployment logs received",
-  citations: "Citations refer to received logs",
-};
+
+type Row = { key: string; label: string; status: "pass" | "fail" | "not_evaluated"; reason: string };
+
+/** Whether the saved record still matches the fingerprint sealed when it finished. */
+function integrityRow({ integrity }: RunView): Row {
+  const label = "Saved record matches its fingerprint";
+  const { status, fingerprint, currentEventCount } = integrity;
+  if (status === "not_finished") return { key: "integrity", label, status: "not_evaluated", reason: "The record is sealed with a fingerprint when the run finishes." };
+  if (!fingerprint) return { key: "integrity", label, status: "fail", reason: "The run finished without a fingerprint. New reviews and coverage checks are refused." };
+  const sealed = fingerprint.origin === "finalization"
+    ? `Fingerprint v${fingerprint.version} of ${fingerprint.eventCount} event(s), sealed when the run finished.`
+    : `Sealed by migration 010 for a run that had already finished. It protects the record from then on, not its earlier history.`;
+  return status === "verified"
+    ? { key: "integrity", label, status: "pass", reason: `${sealed} SHA-256 ${fingerprint.sha256}.` }
+    : { key: "integrity", label, status: "fail", reason: `The saved events or final fields changed after sealing: the record now has ${currentEventCount} event(s) and no longer matches SHA-256 ${fingerprint.sha256}.` };
+}
+
 export function EvidenceChecks({ run }: { run: RunView }) {
   const [open, setOpen] = useState(false);
-  const entries = Object.entries(run.checks);
-  const failures = entries.filter(([, check]) => check.status === "fail");
-  const row = ([key, check]: (typeof entries)[number]) => (
-    <div className="check-row" key={key}>
+  const daily = run.source === "daily_capture";
+  const labels = {
+    execution: "Investigation completed",
+    answer: "Saved answer matches trace",
+    toolTrace: "Tool requests and results match",
+    retrieval: daily ? "Recorded evidence received" : "Deployment logs received",
+    citations: daily ? "Citations refer to received records" : "Citations refer to received logs",
+  };
+  const rows: Row[] = [
+    integrityRow(run),
+    ...(Object.keys(labels) as (keyof typeof labels)[]).map((key) => ({ key, label: labels[key], ...run.checks[key] })),
+    ...(daily && !run.reportReproduced
+      ? [{ key: "reproduced", label: "Saved events reproduce the frozen report", status: "fail" as const, reason: "The saved events no longer produce the evidence report frozen when the investigation finished." }]
+      : []),
+  ];
+  const failures = rows.filter((row) => row.status === "fail");
+  const row = (value: Row) => (
+    <div className="check-row" key={value.key}>
       <div>
-        <span>{labels[key as keyof typeof labels]}</span>
-        <p>{check.reason}</p>
+        <span>{value.label}</span>
+        <p>{value.reason}</p>
       </div>
       <Status
-        value={check.status}
+        value={value.status}
         label={
-          check.status === "pass"
+          value.status === "pass"
             ? "Passed"
-            : check.status === "fail"
+            : value.status === "fail"
               ? "Failed"
               : "Not assessed"
         }
@@ -39,23 +63,23 @@ export function EvidenceChecks({ run }: { run: RunView }) {
   );
   const heading = (
     <>
-      <ShieldCheck size={16} />
+      <ShieldCheck size={16} aria-hidden="true" />
       <span className="checks-title">
-        Evidence checks<small>TypeScript</small>
+        Evidence checks<small>Integrity, trace, and citations · TypeScript</small>
       </span>
       <span className="checks-count">
         {run.status === "running"
           ? "Waiting for the saved answer"
           : failures.length
             ? `${failures.length} failed`
-            : `${entries.filter(([, check]) => check.status === "pass").length} / ${entries.length} passed`}
+            : `${rows.filter((value) => value.status === "pass").length} / ${rows.length} passed`}
       </span>
     </>
   );
   return (
     <section
       id="checks"
-      className="workspace-checks"
+      className="result-section workspace-checks"
       aria-label="Evidence checks"
       tabIndex={-1}
     >
@@ -68,16 +92,17 @@ export function EvidenceChecks({ run }: { run: RunView }) {
             <ChevronDown
               size={14}
               className={open ? "rotate-180" : undefined}
+              aria-hidden="true"
             />
           </CollapsibleTrigger>
         )}
         {run.status !== "running" && failures.map(row)}
         <CollapsibleContent>
-          {entries.filter(([, check]) => check.status !== "fail").map(row)}
+          {rows.filter((value) => value.status !== "fail").map(row)}
           <p className="footnote">
-            {run.evaluatorVersion} · Checks recorded evidence and references.
-            The model review assesses whether that evidence supports the
-            diagnosis.
+            {run.evaluatorVersion}
+            {daily ? " · frozen when the investigation finished" : ""} · Checks where cited records came from, not whether
+            they support the diagnosis. The model review assesses that separately.
           </p>
         </CollapsibleContent>
       </Collapsible>

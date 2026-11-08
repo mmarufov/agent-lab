@@ -3,7 +3,7 @@ import { dailyCaptureIdSchema } from "@agent-lab/contracts/daily-capture";
 import { DAILY_ANSWER_SCHEMA_VERSION, dailyInvestigationAnswerSchema } from "@agent-lab/contracts/daily-investigation";
 import { createCaptureAccess, type CaptureGrant } from "@agent-lab/lab/capture-access";
 import { createPool } from "@agent-lab/lab/database";
-import { dailyCapturesDir } from "@agent-lab/lab/daily-evidence";
+import { DailyCaptureError, dailyCapturesDir } from "@agent-lab/lab/daily-evidence";
 import { acquireExecution } from "@agent-lab/lab/jobs";
 import { createRunStore } from "@agent-lab/lab/runs";
 import investigator from "../../my-agent/agent/agent";
@@ -36,6 +36,8 @@ export async function runDailyInvestigation(
     baseUrl?: string;
     capturesDir?: string;
     timeoutMs?: number;
+    /** The browser operation that asked for this capture; linked to the run when it is created. */
+    jobId?: string;
     /** Starts Eve with these settings; tests run a fixture copy of the agent. */
     startEve?: (settings: InvestigatorSettings, signal: AbortSignal) => Promise<Eve>;
     onCreated?: (value: { runId: string; grant: CaptureGrant }) => void | Promise<void>;
@@ -91,7 +93,7 @@ export async function runDailyInvestigation(
         deadlines: { investigationMs: timeoutMs, eveStartupMs: EVE_STARTUP_MS, toolRequestMs: DAILY_TOOL_DEADLINE_MS },
         evidenceService: baseUrl,
       },
-    });
+    }, options.jobId);
     await options.onCreated?.({ runId, grant });
 
     // 4. The evidence service answers with this grant. Its page is not given to
@@ -132,7 +134,9 @@ export async function runDailyInvestigation(
     if (/capture_missing|capture_changed/.test(message))
       message += " The lab service reads captures from its own working directory; run pnpm dev from this checkout.";
     const safe = token ? message.replaceAll(token, "[redacted]") : message;
-    if (!runId) throw new Error(safe);
+    // A recording refused before any run exists keeps its type, so a caller
+    // can explain it; it was refused before a token existed.
+    if (!runId) throw error instanceof DailyCaptureError ? error : new Error(safe);
     // Save what was recorded before cleanup, without inventing an answer.
     try {
       await runs.finish(runId, { status: options.signal?.aborted ? "cancelled" : "failed", error: safe });

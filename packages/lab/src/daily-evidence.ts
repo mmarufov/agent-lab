@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { constants, type Stats } from "node:fs";
-import { lstat, open } from "node:fs/promises";
+import { lstat, open, readdir } from "node:fs/promises";
 import { basename, join } from "node:path";
 import {
   dailyCaptureControllerSchema,
   dailyCaptureEvidenceSchema,
   dailyCaptureIdSchema,
   dailyCaptureManifestSchema,
+  dailyCaptureStartedAt,
   type DailyApplicationLog,
   type DailyCaptureControllerRecord,
   type DailyCaptureEvidence,
@@ -84,6 +85,12 @@ export async function readDailyCapture(
   captureId: string,
   pinned?: CaptureFileHashes,
 ): Promise<DailyCaptureRecords> {
+  const { records } = await acceptCapture(capturesDir, captureId, pinned);
+  return records;
+}
+
+/** readDailyCapture's checks, also returning the verified manifest for allowlisted metadata. */
+async function acceptCapture(capturesDir: string, captureId: string, pinned?: CaptureFileHashes) {
   // The ID is the only selector, and its format admits no path separators.
   if (!dailyCaptureIdSchema.safeParse(captureId).success)
     throw new DailyCaptureError("invalid", "A capture is selected by an ID like 20261022T050138Z-39b307.");
@@ -111,12 +118,72 @@ export async function readDailyCapture(
   const invalidLines = verified.artifacts[EVIDENCE].invalidLines + verified.artifacts[CONTROLLER].invalidLines;
   if (invalidLines)
     throw new DailyCaptureError("rejected", `${label} has ${invalidLines} invalid line(s); only intact files are served.`);
-  return {
+  const records: DailyCaptureRecords = {
     captureId,
     sha256: verified.sha256,
     observations: verified.evidence.filter((record) => record.kind === "http"),
     logs: verified.evidence.filter((record) => record.kind === "log"),
   };
+  return { records, manifest: verified.manifest };
+}
+
+/**
+ * What the workbench may show about one capture. An explicit allowlist: never
+ * file contents, filesystem paths, controller records, hashes, or the manifest.
+ */
+export type DailyCaptureListing =
+  | {
+      captureId: string;
+      available: true;
+      /** When the capture started and finished, from its verified manifest. */
+      recordedAt: string;
+      finishedAt: string | null;
+      httpObservations: number;
+      logLines: number;
+    }
+  | {
+      captureId: string;
+      available: false;
+      /** When the capture started, read from its ID. */
+      recordedAt: string;
+      problem: { code: DailyCaptureError["code"]; message: string };
+    };
+
+/**
+ * Every entry of capturesDir named like a capture ID, newest first, each read
+ * through readDailyCapture's checks: symbolic links are refused, files must
+ * match their manifest, and only a completed recording with complete evidence
+ * is available. Other names are ignored; a missing directory has no captures.
+ */
+export async function listDailyCaptures(capturesDir: string, limit = 100): Promise<DailyCaptureListing[]> {
+  let names: string[];
+  try {
+    names = await readdir(capturesDir);
+  } catch (error) {
+    if (["ENOENT", "ENOTDIR"].includes(errorCode(error) ?? "")) return [];
+    throw error;
+  }
+  const ids = names.filter((name) => dailyCaptureIdSchema.safeParse(name).success).sort().reverse().slice(0, limit);
+  return Promise.all(
+    ids.map(async (captureId): Promise<DailyCaptureListing> => {
+      try {
+        const { records, manifest } = await acceptCapture(capturesDir, captureId);
+        return {
+          captureId,
+          available: true,
+          recordedAt: manifest.createdAt,
+          finishedAt: manifest.finishedAt,
+          httpObservations: records.observations.length,
+          logLines: records.logs.length,
+        };
+      } catch (error) {
+        const problem = error instanceof DailyCaptureError
+          ? { code: error.code, message: error.message }
+          : { code: "invalid" as const, message: `Capture ${captureId} could not be read.` };
+        return { captureId, available: false, recordedAt: dailyCaptureStartedAt(captureId), problem };
+      }
+    }),
+  );
 }
 
 /** The capture's own directory: not a symbolic link, and not anything but a directory. */

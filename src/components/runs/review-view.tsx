@@ -14,21 +14,36 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Empty, Status, money, timestamp, tokens } from "./display";
 export function ReviewView({
   reviews,
   selectedId,
   onSelectReview,
   citations,
+  stale,
 }: {
   reviews: RunView["reviews"];
   selectedId: string | null;
   onSelectReview: (id: string) => void;
   citations: (ids: string[]) => ReactNode;
+  /** The record no longer verifies, so saved reviews describe an earlier state of it. */
+  stale: boolean;
 }) {
   const review = reviews.find((item) => item.id === selectedId) ?? reviews[0];
   return (
     <>
+      {stale && review && (
+        <Alert variant="destructive" className="section-alert">
+          <AlertTitle>Saved for an earlier state of this record</AlertTitle>
+          <AlertDescription>
+            <p>
+              These reviews were created while the investigation&apos;s record verified. It no longer matches its
+              fingerprint, so they do not show that the current record is supported.
+            </p>
+          </AlertDescription>
+        </Alert>
+      )}
       {reviews.length > 1 && (
         <Select value={review.id} onValueChange={onSelectReview}>
           <SelectTrigger aria-label="Review attempt" className="mb-5">
@@ -45,9 +60,9 @@ export function ReviewView({
         </Select>
       )}
       {!review ? (
-        <Empty title="Ready for a second perspective">
-          Request a review to assess each claim against the received evidence.
-          It uses a fresh model context.
+        <Empty title="No review yet">
+          A separate model can assess each claim against the received evidence,
+          in a fresh context. It is a paid request that starts only when you ask.
         </Empty>
       ) : (
         <>
@@ -111,6 +126,11 @@ export function ReviewView({
             <dl>
               <dt>Model</dt>
               <dd>{review.modelId}</dd>
+              <dt>Input</dt>
+              <dd>
+                Saved answer and {review.inputRecords} received record
+                {review.inputRecords === 1 ? "" : "s"}
+              </dd>
               <dt>Reported model cost</dt>
               <dd>{money(review.usage.costUsd)}</dd>
               <dt>Tokens</dt>

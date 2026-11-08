@@ -39,6 +39,7 @@ const ALL_VERSIONS = [
   "009_immutable_reviews",
   "010_evidence_integrity",
   "011_coverage_assessments",
+  "012_coverage_jobs",
 ];
 
 async function versions(pool: Pool) {

@@ -27,6 +27,12 @@ async function complete(id: string, snapshot: NonNullable<Awaited<ReturnType<typ
   ].entries()) await runs.appendEvent(id, { ...event, meta: { id: `event-${index}`, at: new Date().toISOString() }, data: { ...event.data, turnId: "turn" } });
   await runs.finish(id, { status: "completed", answer, message: "" });
 }
+async function simulatedView(id: string) {
+  const view = await createWebStore(pool).get(id);
+  if (view.source !== "simulated") throw new Error("Expected a simulated run view.");
+  return view;
+}
+
 it("seeds fresh ordered case evidence and atomically reopens the saved answer and assessment", async () => {
   const { trial, id, definition } = await fixture();
   expect(trial.caseSnapshot).toBeTruthy();
@@ -36,7 +42,7 @@ it("seeds fresh ordered case evidence and atomically reopens the saved answer an
   definition.logs.length = 0;
   const saved = await runs.get(id);
   expect(saved).toMatchObject({ status: "completed", caseId: "recovered-startup", caseVersion: 1, resultSchemaVersion: 2, outcomeReport: { status: "pass", expected: { state: "recovered" } } });
-  const web = await createWebStore(pool).get(id);
+  const web = await simulatedView(id);
   expect(web.outcome).toEqual(saved.outcomeReport);
   expect(web.caseName).toBe("Recovered startup");
   expect((await createWebStore(pool).list()).items.find((run) => run.id === id)).toMatchObject({ caseName: "Recovered startup", outcomeStatus: "pass" });
@@ -44,7 +50,7 @@ it("seeds fresh ordered case evidence and atomically reopens the saved answer an
   await expect(pool.query("UPDATE lab_investigation_runs SET outcome_report = '{}' WHERE id = $1", [id])).rejects.toThrow(/immutable/i);
   // Editing live trial logs cannot silently recompute the saved assessment on refresh.
   await pool.query("DELETE FROM lab_deployment_logs WHERE trial_id = $1", [trial.trialId]);
-  expect((await createWebStore(pool).get(id)).outcome).toEqual(saved.outcomeReport);
+  expect((await simulatedView(id)).outcome).toEqual(saved.outcomeReport);
   const reviews = createReviewStore(pool);
   const review = await reviews.start(id, { source: "simulated", modelId: "test/model", promptVersion: "test", schemaVersion: 1, system: "Assess prose.", settings: { maxOutputTokens: 1000, maxRetries: 0, timeoutMs: 1000, maxInputBytes: 65536 } });
   expect(Object.keys(review.input).sort()).toEqual(["answer", "deploymentId", "evidence", "task"]);
@@ -63,5 +69,5 @@ it("preserves deployment-only compatibility with no outcome pass", async () => {
   const id = await runs.create({ trialId: trial.trialId, deploymentId: "B", task: "Legacy", instructions: "Legacy", agentConfigSource: "Legacy" });
   await runs.finish(id, { status: "completed", answer: { diagnosis: "Legacy", evidenceIds: [], uncertainty: "Unknown" }, message: "" });
   expect(await runs.get(id)).toMatchObject({ resultSchemaVersion: 1, caseSnapshot: null, outcomeReport: null });
-  expect((await createWebStore(pool).get(id)).outcome.status).toBe("not_evaluated");
+  expect((await simulatedView(id)).outcome.status).toBe("not_evaluated");
 });

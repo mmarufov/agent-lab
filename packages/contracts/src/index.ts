@@ -1,6 +1,11 @@
 import { z } from "zod";
+import { dailyCaptureIdSchema } from "./daily-capture";
+
+/** Which evidence an investigation read: a simulated deployment trial or one recorded Daily capture. */
+export const runSourceSchema = z.enum(["simulated", "daily_capture"]);
 
 export const runListInputSchema = z.object({
+  source: runSourceSchema.optional(),
   deploymentId: z.enum(["A", "B", "C"]).optional(),
   status: z.enum(["running", "completed", "failed", "cancelled"]).optional(),
   cursor: z.uuid().optional(),
@@ -18,7 +23,12 @@ export const caseNames: Record<CaseId, string> = {
 export const executionRequestSchema = z.union([
   z.strictObject({ requestId: z.uuid(), kind: z.literal("investigate"), caseId: caseIdSchema }),
   z.strictObject({ requestId: z.uuid(), kind: z.literal("investigate"), deploymentId: z.enum(["A", "B", "C"]) }),
+  // One recorded Daily capture, selected by its ID only. The worker verifies the
+  // recording again before granting Eve access to it.
+  z.strictObject({ requestId: z.uuid(), kind: z.literal("investigate"), source: z.literal("daily_capture"), captureId: dailyCaptureIdSchema }),
   z.strictObject({ requestId: z.uuid(), kind: z.literal("review"), runId: z.uuid() }),
+  // Evidence coverage of a finished Daily investigation. It makes no model request.
+  z.strictObject({ requestId: z.uuid(), kind: z.literal("coverage"), runId: z.uuid() }),
 ]);
 export type ExecutionRequest = z.infer<typeof executionRequestSchema>;
 
@@ -120,6 +130,13 @@ export const reviewObservationSchema = z.strictObject({
     costUsd: z.number().nonnegative().nullable(),
   }),
 });
+
+/**
+ * The largest review input either reviewer configuration accepts, in bytes of
+ * JSON. Evidence is never truncated to fit: a larger input is refused before
+ * any model request, and the workbench says so before offering the action.
+ */
+export const REVIEW_MAX_INPUT_BYTES = 64 * 1024;
 
 /** Which kind of investigation a reviewer configuration is for. Reviews saved before it existed are all simulated. */
 export const reviewSourceSchema = z.enum(["simulated", "daily_capture"]);

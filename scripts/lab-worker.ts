@@ -1,6 +1,5 @@
 import { createPool } from "@agent-lab/lab/database";
-import { runInvestigation } from "./lib/investigation";
-import { runReview } from "./lib/review";
+import { createExecutor } from "./lib/executor";
 import { serveWorker } from "./lib/worker";
 
 async function main() {
@@ -15,13 +14,7 @@ async function main() {
     await serveWorker(pool, {
       signal: shutdown.signal,
       log: console.log,
-      execute: (job, signal) =>
-        job.command.kind === "investigate"
-          ? runInvestigation(pool, "caseId" in job.command ? { caseId: job.command.caseId } : job.command.deploymentId, {
-              signal,
-              jobId: job.id,
-            })
-          : runReview(pool, job.command.runId, { signal, jobId: job.id }),
+      execute: createExecutor(pool),
     });
   } finally {
     process.removeListener("SIGINT", interrupt);

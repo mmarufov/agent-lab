@@ -11,6 +11,14 @@ const sha256 = z.string().regex(/^[0-9a-f]{64}$/);
 const containerId = z.string().regex(/^[0-9a-f]{64}$/);
 
 export const dailyCaptureIdSchema = z.string().regex(/^\d{8}T\d{6}Z-[0-9a-f]{6}$/);
+
+/** When a capture started, read from its ID: pnpm daily:capture names it after the UTC second it began. */
+export function dailyCaptureStartedAt(captureId: string) {
+  const match = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z-[0-9a-f]{6}$/.exec(captureId);
+  if (!match) throw new Error("A capture ID looks like 20261022T050138Z-39b307.");
+  const [, year, month, day, hour, minute, second] = match;
+  return `${year}-${month}-${day}T${hour}:${minute}:${second}.000Z`;
+}
 export const dailyServiceSchema = z.enum(["daily-db", "daily-api", "daily-gateway"]);
 export const dailyCapturePhaseSchema = z.enum(["baseline", "outage", "restore", "recovery", "collection"]);
 

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { Pool } from "pg";
-import type { DailyHttpObservation } from "@agent-lab/contracts/daily-capture";
+import type { DailyApplicationLog, DailyHttpObservation } from "@agent-lab/contracts/daily-capture";
 import { compareTimestamps } from "@agent-lab/contracts/daily-review";
 import { COVERAGE_EVALUATOR_VERSION, evaluateCoverage, unassessedCoverage, type CoverageFact, type CoverageResult } from "./coverage";
 import { readDailyEvidence, type ReceivedRecord } from "./daily-evaluate";
@@ -17,14 +17,27 @@ import { createRunStore, requireVerifiedIntegrity, type DailyRun } from "./runs"
 
 export const DAILY_FEED_AVAILABILITY_PROFILE = "daily-feed-availability-v1";
 
-const isFeedRequest = (observation: DailyHttpObservation) =>
+/**
+ * Why no coverage assessment was saved: the run cannot be assessed under this
+ * profile, or its recording or saved events no longer reproduce what it read.
+ * Messages name runs, captures, and records, never filesystem paths.
+ */
+export class CoverageError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CoverageError";
+  }
+}
+
+/** An authenticated GET /feed request: the only observations daily-feed-availability-v1 reads. */
+export const isFeedRequest = (observation: DailyHttpObservation) =>
   observation.method === "GET" && observation.path === "/feed" && observation.authenticated;
 const isServerError = (observation: DailyHttpObservation) =>
   observation.outcome === "response" && observation.response.status >= 500 && observation.response.status <= 599;
 const isNoResponse = (observation: DailyHttpObservation) => observation.outcome === "timeout" || observation.outcome === "network_error";
 
 /** HTTP 200 with an untruncated JSON body whose status is "ready" and that has an articles array. */
-function isReadyFeed(observation: DailyHttpObservation) {
+export function isReadyFeed(observation: DailyHttpObservation) {
   if (observation.outcome !== "response") return false;
   const { status, bodyFormat, bodyTruncated, body } = observation.response;
   const json = body !== null && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>) : null;
@@ -92,6 +105,23 @@ export function dailyFeedAvailabilityFacts(observations: readonly DailyHttpObser
   };
 }
 
+/**
+ * Every received record that is not, in full, the record of the same ID in the
+ * recording: one problem each, naming the record, never its contents. Matching
+ * IDs are not enough; an altered record is not the recorded evidence.
+ */
+export function recordsDifferingFromRecording(
+  records: readonly (DailyHttpObservation | DailyApplicationLog)[],
+  capture: Pick<DailyCaptureRecords, "observations" | "logs">,
+) {
+  const recorded = new Map([...capture.observations, ...capture.logs].map((record) => [record.id, record]));
+  return records.flatMap((record) => {
+    const original = recorded.get(record.id);
+    if (!original) return [`${record.id} is not in the recording`];
+    return isDeepStrictEqual(original, record) ? [] : [`${record.id} differs from the recorded ${record.kind === "http" ? "observation" : "log line"}`];
+  });
+}
+
 export interface DailyCoverageAssessment {
   profileVersion: typeof DAILY_FEED_AVAILABILITY_PROFILE;
   evaluatorVersion: typeof COVERAGE_EVALUATOR_VERSION;
@@ -126,10 +156,10 @@ export interface SavedCoverageAssessment extends DailyCoverageAssessment {
 export function assessDailyFeedAvailability(run: DailyRun, capture: DailyCaptureRecords): DailyCoverageAssessment {
   const integrity = requireVerifiedIntegrity(run, "No coverage assessment was saved");
   if (capture.captureId !== run.captureId || !isDeepStrictEqual(capture.sha256, run.captureSha256))
-    throw new Error(`The recording supplied is not the one run ${run.id} read. No coverage assessment was saved.`);
+    throw new CoverageError(`The recording supplied is not the one run ${run.id} read. No coverage assessment was saved.`);
   const { report, records } = readDailyEvidence({ ...run, evidenceSha256: run.captureSha256[EVIDENCE] });
   if (!run.evidenceReport || !isDeepStrictEqual(report, run.evidenceReport))
-    throw new Error(`The saved events of run ${run.id} no longer produce the evidence report frozen when it finished. No coverage assessment was saved; inspect it with pnpm lab evaluate ${run.id}.`);
+    throw new CoverageError(`The saved events of run ${run.id} no longer produce the evidence report frozen when it finished. No coverage assessment was saved; inspect it with pnpm lab evaluate ${run.id}.`);
 
   const profile = dailyFeedAvailabilityFacts(capture.observations);
   const { execution, answer, toolTrace } = report.checks;
@@ -143,14 +173,9 @@ export function assessDailyFeedAvailability(run: DailyRun, capture: DailyCapture
   let matches: ReceivedRecord[] = [];
   if (unassessable) coverage = unassessedCoverage(profile.facts, unassessable);
   else {
-    const recorded = new Map([...capture.observations, ...capture.logs].map((record) => [record.id, record]));
-    const problems = records.flatMap((record) => {
-      const original = recorded.get(record.id);
-      if (!original) return [`${record.id} is not in the recording`];
-      return isDeepStrictEqual(original, record) ? [] : [`${record.id} differs from the recorded ${record.kind === "http" ? "observation" : "log line"}`];
-    });
+    const problems = recordsDifferingFromRecording(records, capture);
     if (problems.length)
-      throw new Error(`Run ${run.id} retrieved records that differ from capture ${run.captureId}: ${problems.join("; ")}. No coverage assessment was saved.`);
+      throw new CoverageError(`Run ${run.id} retrieved records that differ from capture ${run.captureId}: ${problems.join("; ")}. No coverage assessment was saved.`);
     coverage = evaluateCoverage(profile.facts, records.map((record) => record.id));
     const matched = new Set(coverage.facts.flatMap((fact) => fact.requirements.flatMap((requirement) => requirement.matchedIds)));
     matches = report.retrievedEvidence.filter((received) => matched.has(received.id));
@@ -200,7 +225,7 @@ export function createCoverageStore(pool: Pool) {
     async assess(runId: string, options: { capturesDir?: string } = {}) {
       const run = await createRunStore(pool).getAny(runId);
       if (run.source !== "daily_capture") {
-        throw new Error(`Investigation ${run.id} is a simulated deployment run. Coverage profile ${DAILY_FEED_AVAILABILITY_PROFILE} assesses recorded Daily capture runs only; check simulated runs with pnpm lab evaluate ${run.id}.`);
+        throw new CoverageError(`Investigation ${run.id} is a simulated deployment run. Coverage profile ${DAILY_FEED_AVAILABILITY_PROFILE} assesses recorded Daily capture runs only; check simulated runs with pnpm lab evaluate ${run.id}.`);
       }
       requireVerifiedIntegrity(run, "No coverage assessment was saved");
       let capture: DailyCaptureRecords;
@@ -208,7 +233,7 @@ export function createCoverageStore(pool: Pool) {
         capture = await readDailyCapture(options.capturesDir ?? dailyCapturesDir(), run.captureId, run.captureSha256);
       } catch (error) {
         if (error instanceof DailyCaptureError)
-          throw new Error(`Coverage needs the recording run ${run.id} read. ${error.message} No coverage assessment was saved.`);
+          throw new CoverageError(`Coverage needs the recording run ${run.id} read. ${error.message} No coverage assessment was saved.`);
         throw error;
       }
       const assessment = assessDailyFeedAvailability(run, capture);
@@ -227,9 +252,14 @@ export function createCoverageStore(pool: Pool) {
         [run.id, assessment.profileVersion, assessment.evaluatorVersion]);
       const { id, assessedAt, ...saved } = existing!;
       if (!isDeepStrictEqual(saved, JSON.parse(JSON.stringify(assessment)))) {
-        throw new Error(`Coverage assessment ${id} of run ${run.id} under ${assessment.profileVersion} and ${assessment.evaluatorVersion} differs from what these rules compute now. Changed rules need a new profile or evaluator version; the saved assessment is unchanged.`);
+        throw new CoverageError(`Coverage assessment ${id} of run ${run.id} under ${assessment.profileVersion} and ${assessment.evaluatorVersion} differs from what these rules compute now. Changed rules need a new profile or evaluator version; the saved assessment is unchanged.`);
       }
       return { created: false, assessment: { ...saved, id, assessedAt } as SavedCoverageAssessment };
+    },
+
+    /** The run's newest saved assessment under any version, or null. PostgreSQL alone, like get. */
+    latestForRun(runId: string) {
+      return read("WHERE run_id = $1 ORDER BY assessed_at DESC, id DESC LIMIT 1", [runId]);
     },
 
     /** A saved assessment, read from PostgreSQL alone: no capture files, Eve, or model. */

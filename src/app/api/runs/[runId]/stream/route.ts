@@ -1,5 +1,6 @@
 import { recordIdSchema } from "@agent-lab/contracts";
 import { snapshotStream } from "@agent-lab/lab/stream";
+import { snapshotSettled } from "@agent-lab/lab/web";
 import { webStore } from "@/lib/server/data";
 import { guard, failure, readError } from "@/lib/server/http";
 
@@ -23,10 +24,8 @@ export async function GET(
         initial,
         load,
         signal: request.signal,
-        settled: (run) =>
-          run.status !== "running" &&
-          !run.activeJobId &&
-          !run.reviews.some((review) => review.status === "running"),
+        // Investigation, automatic coverage, and review jobs all keep it open.
+        settled: snapshotSettled,
       }),
       {
         headers: {

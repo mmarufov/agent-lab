@@ -3,8 +3,8 @@ import { useEffect, useRef, useState } from "react";
 import type { RunView } from "@agent-lab/lab/web";
 import { request, type Job } from "./request";
 
-// One owner for detail-page delivery. GETs only restore saved state; the two
-// explicit actions below are the only paths that can submit/cancel model work.
+// One owner for detail-page delivery. GETs only restore saved state; the
+// explicit actions below are the only paths that can submit or cancel work.
 export function useRunController(initial: RunView) {
   const [run, setRun] = useState(initial);
   const [connection, setConnection] = useState<
@@ -15,6 +15,7 @@ export function useRunController(initial: RunView) {
   const [awaitingJob, setAwaitingJob] = useState<Job | null>(null);
   const reconnect = useRef<() => void>(() => {});
   const requestId = useRef<string | null>(null);
+  const requestKind = useRef<"review" | "coverage" | null>(null);
   const submitting = useRef(false);
   const actionAbort = useRef<AbortController | null>(null);
   useEffect(() => {
@@ -78,18 +79,22 @@ export function useRunController(initial: RunView) {
     };
   }, [initial.id]);
 
-  async function review() {
+  // A paid model review, or a coverage check that makes no model request. A
+  // retried submission reuses its request ID, so it never starts twice.
+  async function start(kind: "review" | "coverage") {
     if (submitting.current) return;
     submitting.current = true;
     setPending(true);
     setActionError("");
+    if (requestKind.current !== kind) requestId.current = null;
+    requestKind.current = kind;
     requestId.current ??= crypto.randomUUID();
     const abort = new AbortController();
     actionAbort.current = abort;
     try {
       const job = await request<Job>(
         "/api/jobs",
-        { requestId: requestId.current, kind: "review", runId: initial.id },
+        { requestId: requestId.current, kind, runId: initial.id },
         abort.signal,
       );
       requestId.current = null;
@@ -100,7 +105,9 @@ export function useRunController(initial: RunView) {
         setActionError(
           error instanceof Error
             ? error.message
-            : "Review could not be started.",
+            : kind === "review"
+              ? "Review could not be started."
+              : "Coverage check could not be started.",
         );
     } finally {
       submitting.current = false;
@@ -154,7 +161,8 @@ export function useRunController(initial: RunView) {
     actionError,
     operation,
     awaitingJob,
-    review,
+    review: () => start("review"),
+    coverage: () => start("coverage"),
     cancel,
     refresh: () => reconnect.current(),
   };
