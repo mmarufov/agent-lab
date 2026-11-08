@@ -1,8 +1,9 @@
 "use client";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { ArrowRight, FlaskConical, Plus } from "lucide-react";
-import type { RunsPage } from "@agent-lab/lab/web";
+import { ArrowRight, AudioWaveform, Plus } from "lucide-react";
+import type { RunSummary, RunsPage } from "@agent-lab/lab/web";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -19,14 +20,46 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Empty, Status, duration, money, timestamp } from "./display";
+import { Empty, Status, duration, money, recordedAt, timestamp } from "./display";
 import { RunActions, ActiveJob } from "./run-actions";
+
+const coverageLabel: Record<Extract<RunSummary, { source: "daily_capture" }>["coverage"]["state"], string> = {
+  covered: "Coverage covered",
+  missed: "Coverage missed",
+  not_assessed: "Coverage not assessed",
+  waiting: "Coverage after the answer",
+  checking: "Checking coverage",
+  check_failed: "Coverage check failed",
+  not_checked: "Coverage not checked",
+  not_applicable: "Coverage not assessed",
+};
+
+/** One line on what was assessed: the case outcome, or Daily evidence coverage. */
+function Assessment({ run }: { run: RunSummary }) {
+  if (run.source === "simulated")
+    return (
+      <Status
+        value={run.outcomeStatus}
+        label={run.outcomeStatus === "pass" ? "Outcome passed" : run.outcomeStatus === "fail" ? "Outcome failed" : "Outcome not assessed"}
+      />
+    );
+  const { state, missedFacts } = run.coverage;
+  return (
+    <Status
+      value={state}
+      label={state === "missed" && missedFacts.length ? `Coverage missed: ${missedFacts.join(", ").replaceAll(" evidence", "")}` : coverageLabel[state]}
+    />
+  );
+}
+
 export function RunsList({
   initial,
+  source,
   deployment,
   status,
 }: {
   initial: RunsPage;
+  source: string;
   deployment: string;
   status: string;
 }) {
@@ -37,10 +70,13 @@ export function RunsList({
     next.delete("cursor");
     if (value === "all") next.delete(key);
     else next.set(key, value);
+    // Deployments belong to simulated cases only.
+    if (key === "source" && value === "daily_capture") next.delete("deployment");
     router.push(`/runs?${next}`);
   }
   const more = new URLSearchParams(search);
   if (initial.nextCursor) more.set("cursor", initial.nextCursor);
+  const filtered = source !== "all" || deployment !== "all" || status !== "all";
   return (
     <main id="main">
       <div className="page-heading">
@@ -62,21 +98,36 @@ export function RunsList({
       <div className="collection-toolbar">
         <div className="filter-controls">
           <Select
-            value={deployment}
-            onValueChange={(value) => filter("deployment", value)}
+            value={source}
+            onValueChange={(value) => filter("source", value)}
           >
-            <SelectTrigger aria-label="Filter deployment" className="w-[155px]">
+            <SelectTrigger aria-label="Filter source" className="w-[175px]">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">All deployments</SelectItem>
-              {["A", "B", "C"].map((id) => (
-                <SelectItem key={id} value={id}>
-                  Deployment {id}
-                </SelectItem>
-              ))}
+              <SelectItem value="all">All sources</SelectItem>
+              <SelectItem value="daily_capture">Daily recordings</SelectItem>
+              <SelectItem value="simulated">Simulated cases</SelectItem>
             </SelectContent>
           </Select>
+          {source !== "daily_capture" && (
+            <Select
+              value={deployment}
+              onValueChange={(value) => filter("deployment", value)}
+            >
+              <SelectTrigger aria-label="Filter deployment" className="w-[155px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All deployments</SelectItem>
+                {["A", "B", "C"].map((id) => (
+                  <SelectItem key={id} value={id}>
+                    Deployment {id}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
           <Select
             value={status}
             onValueChange={(value) => filter("status", value)}
@@ -95,28 +146,29 @@ export function RunsList({
           </Select>
         </div>
         <span className="collection-note">
-          <FlaskConical size={13} />
-          Authored simulation cases
+          <AudioWaveform size={13} aria-hidden="true" />
+          Saved local recordings and authored cases
         </span>
       </div>
       <div className="run-table-panel">
         {initial.items.length === 0 ? (
           <Empty
             title={
-              deployment !== "all" || status !== "all"
+              filtered
                 ? "No matching investigations"
                 : "Your first investigation starts here"
             }
           >
-            Choose a simulated case and run the investigator. Its evidence
-            and review will be saved here.
+            {filtered
+              ? "Change the filters to see other saved investigations."
+              : "Choose a saved Daily recording or a simulated case and run the investigator. Its evidence, checks, and any review are saved here."}
           </Empty>
         ) : (
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead className="pl-5">Investigation</TableHead>
-                <TableHead>Execution</TableHead>
+                <TableHead>Execution · assessment</TableHead>
                 <TableHead className="hide-phone">Model</TableHead>
                 <TableHead className="hide-tablet">Started · UTC</TableHead>
                 <TableHead className="hide-phone text-right">
@@ -132,21 +184,45 @@ export function RunsList({
             </TableHeader>
             <TableBody>
               {initial.items.map((run) => (
-                <TableRow key={run.id} className="group">
+                <TableRow key={run.id} className="group" data-source={run.source}>
                   <TableCell className="pl-5">
                     <Link className="run-name" href={`/runs/${run.id}`}>
-                      <span className="deployment-mark">
-                        {run.deploymentId}
-                      </span>
-                      <span>
-                        <strong>{run.caseName ?? `Deployment ${run.deploymentId}`}</strong>
-                        <span className="run-id">{run.id.slice(0, 8)}</span>
+                      {run.source === "daily_capture" ? (
+                        <span className="deployment-mark source-mark" aria-hidden="true">
+                          <AudioWaveform size={14} />
+                        </span>
+                      ) : (
+                        <span className="deployment-mark">
+                          {run.deploymentId}
+                        </span>
+                      )}
+                      <span className="run-label">
+                        <strong>
+                          {run.source === "daily_capture"
+                            ? `Daily recording · ${recordedAt(run.recordedAt)}`
+                            : (run.caseName ?? `Deployment ${run.deploymentId}`)}
+                        </strong>
+                        <span className="run-id">
+                          {run.source === "daily_capture" ? `${run.captureId} · ` : ""}
+                          {run.id.slice(0, 8)}
+                        </span>
+                        <Badge variant="outline" className="source-badge">
+                          {run.source === "daily_capture" ? "Daily recording" : "Simulated case"}
+                        </Badge>
                       </span>
                     </Link>
                   </TableCell>
                   <TableCell>
                     <Status value={run.status} />
-                    <div className="mt-1 text-xs"><Status value={run.outcomeStatus} label={run.outcomeStatus === "pass" ? "Outcome passed" : run.outcomeStatus === "fail" ? "Outcome failed" : "Outcome not assessed"} /></div>
+                    <div className="mt-1 text-xs"><Assessment run={run} /></div>
+                    {run.reviewStatus && (
+                      <div className="mt-1 text-xs">
+                        <Status
+                          value={run.reviewStatus}
+                          label={run.reviewStatus === "completed" ? "Reviewed" : run.reviewStatus === "running" ? "Reviewing" : `Review ${run.reviewStatus}`}
+                        />
+                      </div>
+                    )}
                   </TableCell>
                   <TableCell className="hide-phone">
                     <span className="model-name">
@@ -200,9 +276,10 @@ export function RunsList({
       <div className="method-note">
         <span className="method-index">01 / 03</span>
         <p>
-          <strong>Investigate. Inspect. Review.</strong> Each answer stays
-          connected to the logs the agent actually received. A separate reviewer
-          assesses what those logs support.
+          <strong>Investigate. Check. Review.</strong> Each answer stays
+          connected to the records the agent actually received. Automatic checks
+          measure what it retrieved, and a separate reviewer assesses what those
+          records support.
         </p>
       </div>
     </main>

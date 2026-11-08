@@ -1,5 +1,4 @@
 import "server-only";
-import { UnsupportedRunSourceError } from "@agent-lab/lab/runs";
 import { localHost } from "./data";
 export function response(value: unknown, status = 200) {
   return Response.json(value, {
@@ -34,8 +33,6 @@ export function executionEnabled() {
   );
 }
 export function readError(error: unknown) {
-  // A Daily capture run exists, but these simulated-only views cannot show it.
-  if (error instanceof UnsupportedRunSourceError) return failure(error.message, 422);
   return error instanceof Error && /not found/i.test(error.message)
     ? failure("This record was not found.", 404)
     : failure(

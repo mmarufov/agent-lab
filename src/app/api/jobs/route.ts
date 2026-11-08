@@ -16,14 +16,14 @@ export async function POST(request: Request) {
   }
   const parsed = executionRequestSchema.safeParse(body);
   if (!parsed.success)
-    return failure("Choose a valid case, deployment, or saved investigation; use exactly one selector.");
+    return failure("Choose a valid recording, case, deployment, or saved investigation; use exactly one selector.");
   try {
     return response(await createJobStore(pool()).submit(parsed.data), 202);
   } catch (error) {
     if (error instanceof JobError)
       return failure(
         error.message,
-        error.code === "offline" ? 503 : error.code === "invalid" ? 422 : 409,
+        { offline: 503, invalid: 422, missing: 404, busy: 409, conflict: 409 }[error.code],
       );
     return readError(error);
   }

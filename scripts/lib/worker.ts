@@ -5,16 +5,18 @@ import {
   acquireExecution,
   createJobStore,
   type ExecutionJob,
+  type FollowUp,
 } from "@agent-lab/lab/jobs";
 
 export async function serveWorker(
   pool: ReturnType<typeof createPool>,
   options: {
     signal: AbortSignal;
+    /** Settles one job: its status, an optional message the browser may show, and what to queue next. */
     execute: (
       job: ExecutionJob,
       signal: AbortSignal,
-    ) => Promise<{ status: "running" | "completed" | "failed" | "cancelled" }>;
+    ) => Promise<{ status: "running" | "completed" | "failed" | "cancelled"; error?: string; next?: FollowUp }>;
     log?: (message: string) => void;
   },
 ) {
@@ -69,12 +71,16 @@ export async function serveWorker(
         const saved = await options.execute(job, signal);
         if (saved.status === "running")
           throw new Error("Operation did not settle.");
+        // A follow-up, such as coverage of a completed Daily answer, is queued
+        // in the same transaction that finishes this job.
         await jobs.finish(
           job.id,
           saved.status,
-          saved.status === "failed"
-            ? "Operation failed. Open the saved record to inspect the available evidence."
-            : undefined,
+          saved.error ??
+            (saved.status === "failed"
+              ? "Operation failed. Open the saved record to inspect the available evidence."
+              : undefined),
+          saved.next,
         );
         options.log?.(`${job.kind} ${job.id}: ${saved.status}`);
       } catch {

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { investigationAnswerSchema, investigationAnswerV2Schema, investigationEventSchema, type InvestigationAnswer, type InvestigationEvent } from "@agent-lab/contracts";
 import {
   DAILY_ANSWER_SCHEMA_VERSION,
@@ -159,6 +159,14 @@ function toRun(row: RunRow): SimulatedRun | DailyRun {
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
+/** A finished run's saved record does not verify, so nothing new may be built from it. */
+export class IntegrityError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "IntegrityError";
+  }
+}
+
 /**
  * The verified fingerprint of a finished run, or an error naming what is wrong.
  * New reviews and coverage assessments are built only from verified records.
@@ -169,7 +177,49 @@ export function requireVerifiedIntegrity(run: { id: string; integrity: RunIntegr
   const problem = status === "not_finished" ? "has not finished, so it has no integrity fingerprint yet"
     : status === "missing" ? "finished without an integrity fingerprint"
     : "no longer matches its integrity fingerprint: its saved events or final fields changed after it was sealed";
-  throw new Error(`Investigation ${run.id} ${problem}. ${consequence}; inspect it with pnpm lab run ${run.id}.`);
+  throw new IntegrityError(`Investigation ${run.id} ${problem}. ${consequence}; inspect it with pnpm lab run ${run.id}.`);
+}
+
+export type RunOutcome =
+  | { status: "completed"; answer: InvestigationAnswer | DailyInvestigationAnswer; message: string }
+  | { status: "failed" | "cancelled"; error: string };
+
+/**
+ * Gives a running run its final status inside the caller's transaction, which
+ * must run at READ COMMITTED (migration 010). A completed answer is validated,
+ * Daily runs freeze their evidence report, case runs freeze their outcome
+ * report, and the UPDATE seals the integrity fingerprint. Returns false, and
+ * changes nothing, when the run is missing or already finished.
+ */
+export async function settleRun(client: PoolClient, runId: string, outcome: RunOutcome) {
+  // This row lock also serializes every event insert, including direct SQL,
+  // so the assessment, the answer, and the integrity fingerprint the UPDATE
+  // below seals share exactly the same trace and become visible in one commit.
+  const selected = await client.query<{
+    id: string; source: RunSource; trialId: string; deploymentId: string; status: RunStatus;
+    caseSnapshot: CaseSnapshot | null; captureId: string; evidenceSha256: string;
+  }>(
+    `SELECT id, source, trial_id AS "trialId", deployment_id AS "deploymentId", status, case_snapshot AS "caseSnapshot",
+       capture_id AS "captureId", capture_evidence_sha256 AS "evidenceSha256"
+     FROM lab_investigation_runs WHERE id = $1 FOR UPDATE`, [runId]);
+  const run = selected.rows[0];
+  if (!run || run.status !== "running") return false;
+  const answerSchema = run.source === "daily_capture" ? dailyInvestigationAnswerSchema
+    : run.caseSnapshot ? investigationAnswerV2Schema : investigationAnswerSchema;
+  const answer = outcome.status === "completed" ? answerSchema.parse(outcome.answer) : null;
+  const events = (await client.query<{ payload: InvestigationEvent }>("SELECT payload FROM lab_investigation_events WHERE run_id = $1 ORDER BY sequence", [runId]))
+    .rows.map((row) => row.payload);
+  const finished = { ...run, status: outcome.status, answer, events };
+  // Daily runs freeze their evidence report; case runs freeze their outcome report.
+  const evidenceReport = run.source === "daily_capture" ? evaluateDailyRun(finished) : null;
+  const outcomeReport = run.source === "simulated" && run.caseSnapshot ? evaluateOutcome(finished) : null;
+  await client.query(
+    `UPDATE lab_investigation_runs SET status = $2, finished_at = clock_timestamp(), answer = $3::jsonb,
+     assistant_message = $4, error = $5, outcome_report = $6::jsonb, evidence_report = $7::jsonb WHERE id = $1`,
+    [runId, outcome.status, answer ? JSON.stringify(answer) : null, outcome.status === "completed" ? outcome.message : null,
+      outcome.status === "completed" ? null : outcome.error, outcomeReport ? JSON.stringify(outcomeReport) : null,
+      evidenceReport ? JSON.stringify(evidenceReport) : null]);
+  return true;
 }
 
 /** One terminal line for a run's integrity, shared by pnpm lab run, lab evaluate, and the investigation commands. */
@@ -242,7 +292,11 @@ export function createRunStore(pool: Pool) {
       return id;
     },
 
-    /** A run that reads one recorded Daily capture through an access grant. It has no trial or deployment. */
+    /**
+     * A run that reads one recorded Daily capture through an access grant. It
+     * has no trial or deployment. With a job ID, the browser operation that
+     * asked for this capture is linked to the run in the same transaction.
+     */
     async createDaily(input: {
       captureId: string;
       grantId: string;
@@ -251,17 +305,27 @@ export function createRunStore(pool: Pool) {
       instructions: string;
       agentConfigSource: string;
       configuration: Record<string, unknown>;
-    }) {
+    }, jobId?: string) {
       const id = randomUUID();
-      // The foreign key also checks that these are the hashes the grant pinned.
-      await pool.query(
-        `INSERT INTO lab_investigation_runs
-           (id, source, capture_id, capture_manifest_sha256, capture_evidence_sha256, capture_controller_sha256, capture_grant_id,
-            task, instructions, instructions_sha256, agent_config_source, result_schema_version, configuration)
-         VALUES ($1, 'daily_capture', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)`,
-        [id, input.captureId, input.sha256[MANIFEST], input.sha256[EVIDENCE], input.sha256[CONTROLLER], input.grantId, input.task,
-          input.instructions, sha256(input.instructions), input.agentConfigSource, DAILY_ANSWER_SCHEMA_VERSION, JSON.stringify(input.configuration)],
-      );
+      await transaction(pool, async (client) => {
+        // The foreign key also checks that these are the hashes the grant pinned.
+        await client.query(
+          `INSERT INTO lab_investigation_runs
+             (id, source, capture_id, capture_manifest_sha256, capture_evidence_sha256, capture_controller_sha256, capture_grant_id,
+              task, instructions, instructions_sha256, agent_config_source, result_schema_version, configuration)
+           VALUES ($1, 'daily_capture', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)`,
+          [id, input.captureId, input.sha256[MANIFEST], input.sha256[EVIDENCE], input.sha256[CONTROLLER], input.grantId, input.task,
+            input.instructions, sha256(input.instructions), input.agentConfigSource, DAILY_ANSWER_SCHEMA_VERSION, JSON.stringify(input.configuration)],
+        );
+        if (jobId) {
+          const linked = await client.query(
+            `UPDATE lab_execution_jobs SET run_id = $2
+             WHERE id = $1 AND kind = 'investigate' AND status = 'running' AND run_id IS NULL
+               AND command ->> 'source' = 'daily_capture' AND command ->> 'captureId' = $3`,
+            [jobId, id, input.captureId]);
+          if (linked.rowCount !== 1) throw new Error("Cannot attach this investigation to its operation.");
+        }
+      });
       return id;
     },
 
@@ -306,38 +370,9 @@ export function createRunStore(pool: Pool) {
       });
     },
 
-    async finish(runId: string, outcome:
-      | { status: "completed"; answer: InvestigationAnswer | DailyInvestigationAnswer; message: string }
-      | { status: "failed" | "cancelled"; error: string }
-    ) {
+    async finish(runId: string, outcome: RunOutcome) {
       await transaction(pool, async (client) => {
-        // This row lock also serializes every event insert, including direct SQL,
-        // so the assessment, the answer, and the integrity fingerprint the UPDATE
-        // below seals share exactly the same trace and become visible in one commit.
-        const selected = await client.query<{
-          id: string; source: RunSource; trialId: string; deploymentId: string; status: RunStatus;
-          caseSnapshot: CaseSnapshot | null; captureId: string; evidenceSha256: string;
-        }>(
-          `SELECT id, source, trial_id AS "trialId", deployment_id AS "deploymentId", status, case_snapshot AS "caseSnapshot",
-             capture_id AS "captureId", capture_evidence_sha256 AS "evidenceSha256"
-           FROM lab_investigation_runs WHERE id = $1 FOR UPDATE`, [runId]);
-        const run = selected.rows[0];
-        if (!run || run.status !== "running") throw new Error("Investigation run is missing or already finished.");
-        const answerSchema = run.source === "daily_capture" ? dailyInvestigationAnswerSchema
-          : run.caseSnapshot ? investigationAnswerV2Schema : investigationAnswerSchema;
-        const answer = outcome.status === "completed" ? answerSchema.parse(outcome.answer) : null;
-        const events = (await client.query<{ payload: InvestigationEvent }>("SELECT payload FROM lab_investigation_events WHERE run_id = $1 ORDER BY sequence", [runId]))
-          .rows.map((row) => row.payload);
-        const finished = { ...run, status: outcome.status, answer, events };
-        // Daily runs freeze their evidence report; case runs freeze their outcome report.
-        const evidenceReport = run.source === "daily_capture" ? evaluateDailyRun(finished) : null;
-        const outcomeReport = run.source === "simulated" && run.caseSnapshot ? evaluateOutcome(finished) : null;
-        await client.query(
-          `UPDATE lab_investigation_runs SET status = $2, finished_at = clock_timestamp(), answer = $3::jsonb,
-           assistant_message = $4, error = $5, outcome_report = $6::jsonb, evidence_report = $7::jsonb WHERE id = $1`,
-          [runId, outcome.status, answer ? JSON.stringify(answer) : null, outcome.status === "completed" ? outcome.message : null,
-            outcome.status === "completed" ? null : outcome.error, outcomeReport ? JSON.stringify(outcomeReport) : null,
-            evidenceReport ? JSON.stringify(evidenceReport) : null]);
+        if (!(await settleRun(client, runId, outcome))) throw new Error("Investigation run is missing or already finished.");
       });
     },
 

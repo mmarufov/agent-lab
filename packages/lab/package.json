@@ -22,6 +22,7 @@
     "./daily-trace": "./src/daily-trace.ts",
     "./coverage": "./src/coverage.ts",
     "./daily-coverage": "./src/daily-coverage.ts",
+    "./daily-recovery": "./src/daily-recovery.ts",
     "./coverage-report": "./src/coverage-report.ts"
   },
   "scripts": { "typecheck": "tsc --noEmit" },

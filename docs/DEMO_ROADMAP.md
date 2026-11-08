@@ -369,6 +369,36 @@ reading before recovery misses it and names `http-0024` and `http-0027` as the
 acceptable records. Coverage does not read the answer. Root-cause log coverage,
 diagnosis grading, and UI integration for Daily runs remain next.
 
+November 1: Daily investigations run from the workbench. The launch form defaults
+to the saved recordings (`GET /api/captures`, verified metadata only); the worker
+runs the existing Daily path, and the transaction that finishes a completed run's
+job queues its coverage check (migration 012, `coverage` jobs, no model request).
+The run page shows the answer, evidence and integrity checks, coverage rows, and
+reviews, with every received record once and its tool calls. One live browser run
+of `20261022T050138Z-39b307` (run `e3bef8a6`) took 27.3 s, made 10 tool calls,
+received 419 distinct records, used 139,683 input and 2,100 output tokens
+(reported $0.0140), and passed every evidence check; coverage found all three facts
+covered. Its review was refused before any model request: the input would be
+103,261 bytes, over the existing 64 KiB limit, and evidence is never truncated. The
+page now says so before the button is pressed. Broader retrieval improved coverage
+but outgrew the reviewer's input limit; how to review large evidence is an open
+design question, not a measured improvement.
+
+November 7: first baseline checkpoint with Eve Eval. `pnpm lab:eval:daily` runs
+the installed Eve 0.71.0 evaluation runner (`eve eval daily/recovery`) on the
+same investigator, task, instructions, model, and two tools, pinned to recording
+`20261022T050138Z-39b307` by SHA-256. The evaluation-only answer adds a structured
+`availability` conclusion; deterministic gates require `recovered`, a cited
+received failure, and a cited received ready response to a request started after
+the last failure ended, with every citation received in full before the answer.
+Coverage is tracked, not a gate; root cause and the free-text explanation are not
+assessed. The one live run passed all five gates and retrieved all three coverage
+facts: 23.9 s, 6 model steps, 7 tool calls, 93,039 input and 1,425 output tokens,
+reported $0.008870. Results are Eve's local artifacts in `my-agent/.eve/evals/`,
+not sealed Agent Lab runs. One recording and one run establish the integration,
+not reliability or an improvement; the direct-tools versus generated-code
+comparison is the next, separate step.
+
 Preferred addition after steps 1-4 work: capture one real failure from an app we
 own or an open-source app running in our own preview. Record the source revision,
 deployment/time window, original record IDs, any redactions, and whether we

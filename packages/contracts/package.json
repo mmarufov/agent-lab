@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./daily-availability": "./src/daily-availability.ts",
     "./daily-capture": "./src/daily-capture.ts",
     "./daily-evidence": "./src/daily-evidence.ts",
     "./daily-investigation": "./src/daily-investigation.ts",

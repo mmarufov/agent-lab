@@ -38,10 +38,38 @@ export type SavedReview =
 const requiresAnswer = "Review requires a completed investigation with a matching saved answer.";
 const requiresTrace = "Cannot review an invalid evidence trace; inspect the evidence checks first.";
 
+/**
+ * Why no review attempt was created: the run is not reviewable, or its input
+ * is over the size limit. Nothing was saved and no model request was made.
+ * Messages name runs and limits, never credentials or filesystem paths.
+ */
+export class ReviewAdmissionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReviewAdmissionError";
+  }
+}
+
+/**
+ * Why a run cannot be reviewed now, or null. A review needs a finished run
+ * whose record verifies, a completed answer that matches the trace, and a
+ * valid tool trace: the frozen report for a Daily run, a fresh check otherwise.
+ * Reviewing it again builds the input and checks its size.
+ */
+export function reviewBlocker(run: SimulatedRun | DailyRun): string | null {
+  if (run.status === "running") return "Review requires a completed answer; this investigation is still running.";
+  if (run.integrity.status !== "verified")
+    return "This investigation's saved record does not match its integrity fingerprint, so it cannot be reviewed.";
+  const checks = run.source === "daily_capture" ? run.evidenceReport?.checks : evaluateRun(run).checks;
+  if (!checks || checks.execution.status !== "pass" || checks.answer.status !== "pass") return requiresAnswer;
+  if (checks.toolTrace.status !== "pass") return requiresTrace;
+  return null;
+}
+
 function prepareSimulated(run: SimulatedRun) {
   const evidenceCheck = evaluateRun(run);
-  if (evidenceCheck.checks.execution.status !== "pass" || evidenceCheck.checks.answer.status !== "pass") throw new Error(requiresAnswer);
-  if (evidenceCheck.checks.toolTrace.status !== "pass") throw new Error(requiresTrace);
+  if (evidenceCheck.checks.execution.status !== "pass" || evidenceCheck.checks.answer.status !== "pass") throw new ReviewAdmissionError(requiresAnswer);
+  if (evidenceCheck.checks.toolTrace.status !== "pass") throw new ReviewAdmissionError(requiresTrace);
   const logs = new Map(evidenceCheck.retrievedEvidence.map(({ log }) => [log.id, log]));
   const input = reviewInputSchema.parse({
     task: run.task, deploymentId: run.deploymentId, answer: run.answer, evidence: [...logs.values()],
@@ -54,22 +82,41 @@ function prepareSimulated(run: SimulatedRun) {
 // receives exactly the records it counts. Capture files are never reopened.
 function prepareDaily(run: DailyRun) {
   const frozen = run.evidenceReport;
-  if (run.status !== "completed" || !frozen) throw new Error(requiresAnswer);
+  if (run.status !== "completed" || !frozen) throw new ReviewAdmissionError(requiresAnswer);
   const { report, records } = readDailyEvidence({ ...run, evidenceSha256: run.captureSha256[EVIDENCE] });
   if (!isDeepStrictEqual(report, frozen)) {
-    throw new Error(`The saved events of run ${run.id} no longer produce the evidence report frozen when it finished. No review was created; inspect it with pnpm lab evaluate.`);
+    throw new ReviewAdmissionError(`The saved events of run ${run.id} no longer produce the evidence report frozen when it finished. No review was created; inspect it with pnpm lab evaluate.`);
   }
-  if (frozen.checks.execution.status !== "pass" || frozen.checks.answer.status !== "pass") throw new Error(requiresAnswer);
-  if (frozen.checks.toolTrace.status !== "pass") throw new Error(requiresTrace);
+  if (frozen.checks.execution.status !== "pass" || frozen.checks.answer.status !== "pass") throw new ReviewAdmissionError(requiresAnswer);
+  if (frozen.checks.toolTrace.status !== "pass") throw new ReviewAdmissionError(requiresTrace);
   const input = dailyReviewInputSchema.parse({
     task: run.task, captureId: run.captureId, evidenceSha256: run.captureSha256[EVIDENCE], answer: run.answer,
     ...orderDailyRecords(records),
   });
   const supplied = [...input.evidence, ...input.untimedEvidence].map((record) => record.id).sort();
   if (!isDeepStrictEqual(supplied, [...new Set(frozen.retrievedEvidence.map((record) => record.id))].sort())) {
-    throw new Error("The records prepared for review differ from those the frozen evidence report counts. No review was created.");
+    throw new ReviewAdmissionError("The records prepared for review differ from those the frozen evidence report counts. No review was created.");
   }
   return { input, evidenceCheck: frozen };
+}
+
+/**
+ * Why a reviewable run still cannot be reviewed under this input limit, or
+ * null: the exact input a review would send, measured the way start measures
+ * it. Nothing is saved and no model is called.
+ */
+export function reviewInputProblem(run: SimulatedRun | DailyRun, maxInputBytes: number): string | null {
+  let input: unknown;
+  try {
+    ({ input } = run.source === "daily_capture" ? prepareDaily(run) : prepareSimulated(run));
+  } catch (error) {
+    if (error instanceof ReviewAdmissionError) return error.message;
+    throw error;
+  }
+  const bytes = Buffer.byteLength(JSON.stringify(input), "utf8");
+  return bytes > maxInputBytes
+    ? `The review input would be ${bytes.toLocaleString("en-US")} bytes, over the ${maxInputBytes.toLocaleString("en-US")}-byte limit. Evidence is never truncated, summarized, or split, so this investigation cannot be reviewed under the current limit; no model request is made.`
+    : null;
 }
 
 // Trusted controller access. No reviewer write tool or public endpoint.
@@ -87,7 +134,7 @@ export function createReviewStore(pool: Pool) {
       const { input, evidenceCheck } = run.source === "daily_capture" ? prepareDaily(run) : prepareSimulated(run);
       const bytes = Buffer.byteLength(JSON.stringify(input), "utf8");
       if (bytes > configuration.settings.maxInputBytes) {
-        throw new Error(`Review input is ${bytes} bytes, over the ${configuration.settings.maxInputBytes}-byte limit. No review was created and no model request was made; evidence is never truncated, summarized, or split.`);
+        throw new ReviewAdmissionError(`Review input is ${bytes} bytes, over the ${configuration.settings.maxInputBytes}-byte limit. No review was created and no model request was made; evidence is never truncated, summarized, or split.`);
       }
       const id = randomUUID();
       const hash = createHash("sha256").update(configuration.system).digest("hex");

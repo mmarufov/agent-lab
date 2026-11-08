@@ -22,6 +22,7 @@
     "zod": "4.5.4"
   },
   "devDependencies": {
+    "@agent-lab/lab": "workspace:*",
     "@types/node": "24.x",
     "typescript": "7.0.2",
     "vitest": "5.0.3"

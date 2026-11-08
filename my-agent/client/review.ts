@@ -1,10 +1,10 @@
 import { createGateway, generateText, gateway, Output, type LanguageModel } from "ai";
 import {
-  reviewConfigSchema, reviewInputSchema, reviewSchemaFor, type ReviewConfig, type ReviewObservation, type ReviewSource,
+  REVIEW_MAX_INPUT_BYTES, reviewConfigSchema, reviewInputSchema, reviewSchemaFor, type ReviewConfig, type ReviewObservation, type ReviewSource,
 } from "@agent-lab/contracts";
 import { dailyReviewInputSchema } from "@agent-lab/contracts/daily-review";
 
-const settings = { maxOutputTokens: 4096, maxRetries: 0, timeoutMs: 60_000, maxInputBytes: 65_536 } as const;
+const settings = { maxOutputTokens: 4096, maxRetries: 0, timeoutMs: 60_000, maxInputBytes: REVIEW_MAX_INPUT_BYTES } as const;
 
 // One configuration per investigation source. The review store saves the one
 // for the run's source, and generateReview sends exactly that configuration.

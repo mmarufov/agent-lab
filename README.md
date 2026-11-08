@@ -2,7 +2,7 @@
 
 Controlled deployment scenarios for testing whether a change to an AI agent improves its behavior.
 
-**Current checkpoint:** a local web workbench for a live Eve investigator through AI Gateway. Start investigations, inspect their saved trace, follow citations to returned logs, and request a separate model review. PostgreSQL retains the evidence and available usage; Evidence checks, saved case outcome checks, and model judgments remain separate. Agent-version comparisons are next. The broader [project plan](PROJECT_BRIEF.md) describes future work.
+**Current checkpoint:** a local web workbench for a live Eve investigator through AI Gateway. Choose a saved Daily recording (or a simulated case), watch Eve investigate it, read the answer with its evidence checks and automatic evidence coverage, follow citations to the exact records it received, and request a separate model review. PostgreSQL retains the evidence and available usage; evidence checks, coverage, saved case outcome checks, and model judgments remain separate. Agent-version comparisons are next. The broader [project plan](PROJECT_BRIEF.md) describes future work.
 
 Deployments A, B, and C and their logs are authored fixtures. No real deployments are created or rolled back, and the tests do not measure model quality.
 
@@ -20,18 +20,30 @@ pnpm dev:lab
 Open **http://127.0.0.1:3000/runs**. `dev:lab` applies pending migrations and
 starts Next.js plus one local worker. Configure Eve's model connection and the
 reviewer credentials described below before starting model work. **New
-investigation** selects one of four development cases and makes a fresh trial; **Review answer** makes a separate model
-request. Both incur model usage. Reading saved runs makes no model calls.
+investigation** offers the saved Daily recordings under `.context/daily-sandbox/captures`
+by default, each verified as an investigation would read it, with its date,
+record counts, and capture ID; recordings that fail verification are listed with
+the reason. It still offers the four simulated development cases. Starting a Daily
+investigation reads the recording only: it never stops a database or makes another
+capture. **Review answer** makes a separate model request. Both incur model usage.
+Reading saved runs makes no model calls.
 
-While an operation runs, a compact activity panel shows recorded model requests
-and tool results. It stays open after completion until you close it;
-**View activity** reopens it. Only steps with details can expand. Click a citation
-to inspect its exact returned log. Evidence checks, outcome checks, and the independent review
-result sit beneath the answer on the left. Outcome failures stay visible; passing
-checks expand to show expected versus observed values and decisive evidence. **Review answer** remains at the bottom
-of the activity panel on the right. Live updates use a read-only SSE connection
-that reads saved state once per second and sends changed snapshots. Reconnecting
-or reopening a run never submits model work.
+While an operation runs, the activity panel shows it in three groups:
+Investigation (model requests and tool calls, each tool call with its filters, the
+number of records returned, and whether more pages exist), Automated checks
+(evidence checks and coverage, which make no model request), and Independent
+review. It stays open after completion until you close it; **View activity**
+reopens it. Only tool calls expand; long results show 20 records at a time. Click a
+citation to reveal its exact received record in the tool call that returned it, and
+**Open full record** for every field, the response body in a plain code block, and
+the raw JSON. On the left, in order: the source and task, the diagnosis with its
+citations and uncertainty, evidence checks (including whether the saved record still
+matches its integrity fingerprint), evidence coverage for a Daily run or outcome
+checks for a case, and the independent review with earlier attempts. Failures stay
+visible; passing details start collapsed. **Review answer** stays at the bottom of
+the activity panel, and moves beneath the review when the panel is closed or on a
+phone. Live updates use a read-only SSE connection that reads saved state once per
+second and sends changed snapshots. Reconnecting or reopening a run never submits work.
 
 Use `pnpm dev` for the viewer and HTTP tools alone. If it is already running,
 start `pnpm lab:worker` in another terminal to enable the actions. Do not run a
@@ -43,7 +55,10 @@ shared with the CLIs. Duplicate submissions with the same request ID reuse the
 saved operation. Only one operation is admitted at a time. Refreshing the page
 does not stop it; use **Cancel** to request cancellation. On worker restart,
 unfinished browser operations are marked interrupted without automatically
-calling a model again. This workbench binds to loopback and is not a hosted,
+calling a model again: an interrupted Daily run is finished as failed with its
+evidence report frozen and its capture grant revoked, and a completed answer is
+kept. A coverage job that never started still runs; an interrupted one is offered
+as **Retry coverage**. This workbench binds to loopback and is not a hosted,
 authenticated multi-user service.
 
 In another terminal, from the repository root:
@@ -296,7 +311,13 @@ pnpm lab evaluate <run-id> [--json]
 
 `daily-evidence-v1` pairs requests and results by turn and call ID. It credits only successful, schema-valid results of the two Daily tools whose records match the requested filters and come from the run's capture and evidence hash, recorded before the final answer. Citations fail when an ID was never returned, its returned contents conflict between calls, or it was listed only as oversized. An empty citation list is unassessed, a failed tool call is reported without being counted as evidence, and diagnosis correctness is always **not assessed**. Eve does not record a model's call to a tool it does not offer; the model receives an error and nothing runs, so the saved trace cannot show such attempts.
 
-The workbench lists simulated runs only. Opening a Daily run there, or asking to review one, gets a clear unsupported-source response (HTTP 422 from the API) that points to `pnpm lab run`. Review Daily runs from the terminal, as below. Diagnosis grading and UI integration for Daily runs are next.
+### Daily investigations in the workbench
+
+The workbench lists Daily runs beside simulated ones, with a source filter. `GET /api/captures` lists recordings for the launch form as allowlisted metadata (capture ID, times, record counts, or a safe reason a recording is unavailable), never paths, hashes, manifests, or controller records. A browser request `{ "kind": "investigate", "source": "daily_capture", "captureId": "..." }` is admitted only after the recording verifies, and the worker verifies it again before granting Eve access, through the same `runDailyInvestigation` path as `pnpm lab:daily-investigate`, with the same deadline, usage limits, cancellation, and cleanup. The run is linked to its job in the transaction that creates it.
+
+When a browser-started Daily investigation completes, the transaction that finishes its job also queues one `coverage` job (migration 012), so the page never sees a moment without an active operation, and a repeated finish cannot queue a second one. The coverage job saves the same assessment as `pnpm lab:coverage` and makes no model request; a missed fact is a completed assessment, not a failed job. If coverage cannot read the recording, the answer is unchanged and the page offers **Retry coverage** with the reason; a run started from the terminal offers **Check coverage**. Records a missed fact would have accepted are shown as **In recording; not retrieved** and never as received evidence. Coverage is never labeled as diagnosis correctness.
+
+A completed Daily run is reviewable when its record verifies and its trace is valid, and the page measures the exact review input first: a run whose input would exceed the 64 KiB limit explains that before **Review answer** is pressed, and admission refuses it, because evidence is never truncated. A record that no longer matches its integrity fingerprint is flagged at the top, new reviews and coverage checks are refused, and saved assessments are marked as describing the record as it was. Credentials, instructions, configuration, controller records, and raw events stay out of every browser response.
 
 ### Reviewing a Daily investigation
 
@@ -336,6 +357,41 @@ Migration 011 stores each assessment once per run, profile version, and evaluato
 
 The terminal shows each fact as covered, missed, or not assessed, the retrieved IDs that met it or the acceptable IDs that were missing, and `Answer interpretation: not assessed by this coverage check`. It shows no percentage. Coverage does not read the answer: a wrong conclusion drawn from the right records still passes. Root-cause log coverage and semantic assessment of the answer are separate, later profiles or evaluators. Neither the investigator nor the reviewer receives the expected facts, the full recording, or an assessment.
 
+### Evaluating the Daily investigator with Eve Eval
+
+```sh
+pnpm lab:eval:daily      # One native `eve eval daily/recovery` run; makes model requests
+```
+
+This grades the same investigator with Eve's own evaluation runner instead of saving an Agent Lab run. It answers one narrow question: did the investigator recognize that Daily's feed failed and then recovered in recording `20261022T050138Z-39b307`, citing records it actually received? It is the baseline for a later comparison; it adds no generated code, improver, reviewer, hosting, or website feature.
+
+It needs PostgreSQL (`pnpm db:up`), the evidence service (`pnpm dev`), Eve's Gateway connection (the one `pnpm --filter my-agent dev` uses), and the saved recording. Daily's containers do not need to run. The launcher (`scripts/lab-eval-daily.ts`, `scripts/lib/daily-eval.ts`):
+
+1. holds the shared execution lock;
+2. verifies the recording against the SHA-256 of each file pinned in `my-agent/evals/daily/recovery-case.ts`; a missing, incomplete, or changed file stops it before any grant or model work, and no other recording is ever substituted;
+3. grants one hour of access pinned to those files and checks that the evidence service serves the capture;
+4. starts `eve eval daily/recovery --strict --max-concurrency 1 --timeout 300000 --skip-report` in `my-agent/`, with the tools' settings from `investigatorEnv`; the database URL and the reviewer's key are not passed on;
+5. revokes the grant and releases the lock, each even if the other fails, and prints the result from Eve's artifacts.
+
+Eve Eval owns the agent server, the session, and the assertions; nothing here calls `runDailyInvestigation` or runs another model loop. The setup in `my-agent/evals/evals.config.ts` runs before Eve starts the server: it refuses settings that do not grant exactly the case's recording, verifies the files again, and recomputes the expected availability from the full recording's authenticated `/feed` observations with `dailyFeedAvailabilityFacts`. `my-agent/evals/daily/recovery.eval.ts` sends the unchanged Daily task with `session.send(task, { outputSchema })`. The evaluation-only `dailyAvailabilityAnswerSchema` (`packages/contracts/src/daily-availability.ts`) keeps the three version-three fields and adds `availability.state` (`healthy`, `failing`, `recovered`, or `unknown`) with failure and recovery evidence IDs, described as the recorded period, not Daily's current health. The model, reasoning setting, instructions, two tools, and session limits are unchanged; the model chooses filters, pages, and parallel calls. The case's expectation, qualifying record IDs, and controller records never enter its request. Saved CLI and web runs keep answer schema version 3.
+
+| Assertion | Passes when |
+| --- | --- |
+| `succeeded` (Eve) | The run did not fail or stop at an unanswered input request. |
+| `outputMatches` (Eve) | The turn returned a structured answer matching the schema. |
+| `turn completed` | The turn reached `turn.completed` with a result and was not cancelled, failed, or waiting on an input request. A session waiting for the next message is the normal end. Eve's `succeeded` alone accepts a cancelled turn, so this check is explicit. |
+| `evidence checks` | `daily-evidence-v1`, read with the availability schema (`readDailyAvailabilityEvidence`), passes; every received record equals the pinned recording's record in full; every role-specific citation was received before the answer and also appears in `evidenceIds`. |
+| `availability outcome` | `state` is `recovered`, citing at least one received failure (a 500-599 response, timeout, or network error) and at least one received ready response to a request that started after the recording's last failure ended. |
+| `coverage (tracked)` | Never a gate. Which `daily-feed-availability-v1` facts the received records establish. |
+
+Any qualifying records count: no tool order, page count, or log retrieval is required. An early success, or a request that overlapped the last failure, is not recovery. Root-cause correctness and free-text explanation correctness are reported as **not assessed**.
+
+Eve saves the results in `my-agent/.eve/evals/<time>/`, and the launcher prints that path: `summary.json` and `results.jsonl` hold the verdict and every assertion with its reason and details; `evals/daily/recovery.json` holds the answer, Eve's derived tool calls and usage, and the eval's `result.logs` records (the case with its pinned hashes; the exact task, instructions, and answer schema with versions; model settings; evaluator versions; Eve version; Git revision and dirty status; SHA-256 of the agent, prompt, eval, and evaluator sources; the full evaluation; and duration, observed models, tool calls, tokens, and reported cost, or `unavailable`); and `evals/daily/recovery.events.ndjson` holds the session's original events. They contain no credentials or controller records. These are local evaluation files, not database-sealed Agent Lab runs: the workbench does not list them, and no integrity fingerprint covers them.
+
+Ctrl+C, a lost lock connection, or running two minutes past the eval timeout sends `eve eval` SIGTERM: the eval cancels its session turn, Eve saves the cancelled turn's events, and the launcher revokes and releases; anything still running after 30 seconds is killed. A second Ctrl+C kills `eve eval` immediately but still revokes and releases. Eve's own five-minute timeout cancels the turn the same way and fails the eval. A usage-limit extension is never approved, so reaching a limit fails the eval. SIGKILL of the launcher cannot guarantee cleanup: `eve eval` notices that its stdin closed and stops itself, PostgreSQL releases the lock with the connection, and the grant stays valid until it expires within the hour.
+
+One recording establishes this integration, not general agent reliability or an improvement rate. The first live run, on November 7, 2026, passed all five gates with all three coverage facts retrieved: 23.9 s, 6 model steps, 7 tool calls, 93,039 input and 1,425 output tokens, reported cost $0.008870.
+
 ## Verify
 
 With PostgreSQL running:
@@ -358,6 +414,10 @@ The investigator runtime tests compile and run a copy of the real `my-agent/agen
 
 The integrity tests use real PostgreSQL, separate connections for concurrent inserts and finishes, and a test helper that disables triggers as an administrator could. They cover rejected changes to saved events and finished runs, identical and conflicting replay, cancellation, worker recovery, a REPEATABLE READ finisher, key-order stability, detection of changed values, migration upgrade and reapplication, legacy labeling, and cascade cleanup. The coverage tests use synthetic recordings in temporary directories: server errors, timeouts, network errors, failures after an apparent recovery, truncated responses, irrelevant authentication failures, retrieval with and without citation, unfinished and invalid investigations, missing, changed, and mismatched evidence, a false conclusion that still passes, concurrent repeats, and reopening after the recording is deleted.
 
+The workbench tests for Daily runs use synthetic recordings and real PostgreSQL: overlapping pages stored once with every receipt, conflicting record versions, filter and page summaries, failed tool calls, private-data exclusions, coverage states and not-retrieved records, integrity mismatch, admission of recordings, coverage, and reviews (including oversized review input), the atomic coverage handoff, recovery, and reads that never write. The worker tests run the real queue and an `eve dev` fixture from a browser-started Daily job through its automatic coverage, plus a recording that changes after admission and coverage that fails, then succeeds on retry. `pnpm test:ui` includes labeled Daily fixtures for the list, launch form, citations past **Show more**, the record Sheet, coverage actions, integrity alerts, phone width, and dark mode.
+
+The Eve Eval tests run the real launcher and `my-agent/evals` with the native `eve eval` command in a copy of the agent whose model is scripted by the test (`scripts/lib/daily-eval.test.ts`), against the real Daily evidence handler, a labeled synthetic recording, and an isolated schema. They cover a passing recovery; the model's request holding no expectation, controller data, or credential; a wrong conclusion; a usage limit; a missing answer; Ctrl+C, a second Ctrl+C, the timeout, a lost lock, and a killed launcher; missing, changed, incomplete, and replaced recordings; and the eval's own setup refusing a mismatched case before any model call. `packages/lab/test/daily-recovery.test.ts` covers the grading rules: other qualifying citations, early and overlapping successes, invented, unreceived, oversized-only, altered, and wrong-capture evidence, identical and conflicting pages, citations after the answer, and strict version-three validation.
+
 The Daily review tests use real PostgreSQL and a test function in place of the model. They cover overlapping pages, repeated and uncited records, untimed lines, failed calls, records after the answer or from another capture, conflicting contents, a frozen report the events no longer produce, oversized input (zero requests, no attempt), invented citations and quotations, provider failure, timeout, cancellation, unsaveable final status, missing credentials, immutability, and reopening in a fresh process.
 
 ## Source map
@@ -365,9 +425,13 @@ The Daily review tests use real PostgreSQL and a test function in place of the m
 | Path | Responsibility |
 | --- | --- |
 | `src/app/api/tools/` | HTTP routes for logs, deployment state, rollback, and recorded Daily evidence (`daily/`). |
-| `src/app/runs/`, `src/components/runs/` | Saved runs, trace, evidence inspector, review history, and execution controls. |
-| `src/lib/server/`, `packages/lab/src/web.ts` | Server-only database access and explicit browser display data. |
-| `packages/lab/src/activity.ts` | Stable activity items; pairs tool requests/results by turn and call ID. |
+| `src/app/runs/`, `src/components/runs/` | Saved runs of both sources, the launch form, trace, record inspector, coverage, review history, and execution controls. |
+| `src/app/api/captures/` | Saved Daily recordings for the launch form, as allowlisted metadata. |
+| `src/lib/server/`, `packages/lab/src/web.ts` | Server-only database access and explicit browser display data for both sources. |
+| `packages/lab/src/activity.ts` | Stable activity items; pairs tool requests/results by turn and call ID and stores each returned record once. |
+| `my-agent/evals/`, `scripts/lab-eval-daily.ts`, `scripts/lib/daily-eval.ts` | The Eve Eval case for the Daily recovery recording and its launcher. |
+| `packages/lab/src/daily-recovery.ts`, `packages/contracts/src/daily-availability.ts` | The evaluation's answer schema and its grading: evidence, availability outcome, and coverage. |
+| `scripts/lib/executor.ts`, `packages/lab/migrations/012_coverage_jobs.sql` | How the worker runs each job kind, and the coverage job that follows a completed Daily investigation. |
 | `src/app/api/runs/[runId]/stream/`, `packages/lab/src/stream.ts` | Read-only SSE snapshots, disconnect cleanup, and terminal closure. |
 | `src/components/runs/use-run-controller.ts` | One detail-page connection plus explicit review and cancellation actions. |
 | `packages/lab/src/jobs.ts`, `scripts/lib/worker.ts` | Local job admission, idempotency, worker lifecycle, cancellation, and crash recovery. |

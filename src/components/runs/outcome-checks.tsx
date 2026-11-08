@@ -1,17 +1,17 @@
 "use client";
 import { useState } from "react";
 import { ChevronDown, Target, Link2 } from "lucide-react";
-import type { RunView } from "@agent-lab/lab/web";
+import type { SimulatedRunView } from "@agent-lab/lab/web";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Status } from "./display";
 
-export function OutcomeChecks({ run, onCitation, selected }: { run: RunView; onCitation: (id: string) => void; selected: string | null }) {
+export function OutcomeChecks({ run, onCitation, selected }: { run: SimulatedRunView; onCitation: (id: string) => void; selected: string | null }) {
   const [expanded, setExpanded] = useState(false);
   const report = run.outcome;
   const assessed = report.status !== "not_evaluated";
-  const heading = <><Target size={16} /><span className="checks-title">Outcome checks<small>{run.caseName ? `${run.caseName} · version ${run.caseVersion}` : "Saved case assessment"}</small></span><span className="checks-count"><Status value={report.status} label={report.status === "pass" ? "Passed" : report.status === "fail" ? "Failed" : "Not assessed"} /></span></>;
+  const heading = <><Target size={16} aria-hidden="true" /><span className="checks-title">Outcome checks<small>{run.caseName ? `${run.caseName} · version ${run.caseVersion}` : "Saved case assessment"}</small></span><span className="checks-count"><Status value={report.status} label={report.status === "pass" ? "Passed" : report.status === "fail" ? "Failed" : "Not assessed"} /></span></>;
   return (
-    <section className="workspace-checks outcome-checks" aria-label="Outcome checks">
+    <section className="result-section workspace-checks outcome-checks" aria-label="Outcome checks">
       <Collapsible open={expanded || report.status === "fail"} onOpenChange={setExpanded}>
         {report.status === "pass" ? <CollapsibleTrigger className="checks-trigger">{heading}<ChevronDown size={14} /></CollapsibleTrigger> : <div className="checks-trigger">{heading}</div>}
         {!assessed && <p className="footnote">{run.status === "running" ? "Waiting for the completed investigation." : report.reasons.join(" ")}</p>}

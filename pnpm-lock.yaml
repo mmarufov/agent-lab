@@ -289,6 +289,9 @@ importers:
         specifier: 4.5.4
         version: 4.5.4
     devDependencies:
+      '@agent-lab/lab':
+        specifier: workspace:*
+        version: link:../packages/lab
       '@types/node':
         specifier: 24.x
         version: 24.19.1

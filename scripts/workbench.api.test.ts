@@ -190,34 +190,108 @@ it("validates case selectors before admitting model work", async () => {
   } finally { await lease.release(); }
 });
 
-it("keeps a Daily capture run out of the workbench and answers its simulated-only paths with a clear refusal", async () => {
+it("serves a Daily capture run in the workbench without private data, and filters runs by source", async () => {
   const dir = await capturesDir();
   await writeCapture(dir);
   const access = createCaptureAccess(pool, dir);
-  const { grant } = await access.grant(CLEAN_CAPTURE_ID);
+  const { grant, token } = await access.grant(CLEAN_CAPTURE_ID);
   const id = await createRunStore(pool).createDaily({
     captureId: grant.captureId, grantId: grant.id, sha256: grant.sha256, task: "Daily fixture",
-    instructions: "PRIVATE_DAILY", agentConfigSource: "PRIVATE_CONFIG", configuration: { toolMode: "daily_capture" },
+    instructions: "PRIVATE_DAILY", agentConfigSource: "PRIVATE_CONFIG", configuration: { toolMode: "daily_capture", note: "PRIVATE_SETTINGS" },
   });
   try {
-    const listed = await (await fetch(`${base}/api/runs`)).json();
-    expect(listed.items.map((item: { id: string }) => item.id)).not.toContain(id);
-    for (const path of [`/api/runs/${id}`, `/api/runs/${id}/stream`]) {
-      const response = await fetch(`${base}${path}`);
-      expect(response.status).toBe(422);
-      const body = await response.json();
-      expect(body.error.message).toContain(`read it with pnpm lab run ${id}`);
-      expect(JSON.stringify(body)).not.toContain("PRIVATE_");
+    const daily = await (await fetch(`${base}/api/runs?source=daily_capture`)).json();
+    expect(daily.items.map((item: { id: string }) => item.id)).toContain(id);
+    expect(daily.items.every((item: { source: string }) => item.source === "daily_capture")).toBe(true);
+    const simulated = await (await fetch(`${base}/api/runs?source=simulated`)).json();
+    expect(simulated.items.map((item: { id: string }) => item.id)).not.toContain(id);
+    expect((await fetch(`${base}/api/runs?source=bogus`)).status).toBe(400);
+    const response = await fetch(`${base}/api/runs/${id}`);
+    expect(response.status).toBe(200);
+    const view = await response.json();
+    expect(view).toMatchObject({ id, source: "daily_capture", captureId: CLEAN_CAPTURE_ID, status: "running", coverage: { state: "waiting" } });
+    const stream = await fetch(`${base}/api/runs/${id}/stream`, { signal: AbortSignal.timeout(3_000) });
+    expect(stream.status).toBe(200);
+    const reader = stream.body!.getReader();
+    const first = new TextDecoder().decode((await reader.read()).value);
+    await reader.cancel();
+    expect(first).toContain("event: snapshot");
+    for (const body of [JSON.stringify(view), first, JSON.stringify(daily)]) {
+      expect(body).not.toContain("PRIVATE_");
+      expect(body).not.toContain(token);
+      expect(body).not.toContain(dir);
     }
     const page = await fetch(`${base}/runs/${id}`);
     expect(page.status).toBe(200);
     const html = await page.text();
-    expect(html).toContain("Recorded Daily investigation.");
+    expect(html).toContain("Daily recording");
     expect(html).not.toContain("PRIVATE_");
   } finally {
     await pool.query("DELETE FROM lab_investigation_runs WHERE id = $1", [id]);
     await access.revoke(grant.id);
     await pool.query("DELETE FROM lab_capture_access_grants WHERE id = $1", [grant.id]);
     await removeCaptureDirs();
+  }
+});
+
+it("lists saved recordings as allowlisted metadata, behind the local-access guard", async () => {
+  const response = await fetch(`${base}/api/captures`);
+  expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  const { captures } = await response.json();
+  expect(Array.isArray(captures)).toBe(true);
+  for (const capture of captures) {
+    const keys = Object.keys(capture).sort();
+    expect(keys).toEqual(capture.available
+      ? ["available", "captureId", "finishedAt", "httpObservations", "logLines", "recordedAt"]
+      : ["available", "captureId", "problem", "recordedAt"]);
+    expect(capture.captureId).toMatch(/^\d{8}T\d{6}Z-[0-9a-f]{6}$/);
+    if (!capture.available) expect(Object.keys(capture.problem).sort()).toEqual(["code", "message"]);
+  }
+  // Filesystem paths and file hashes never appear; a problem names files, not their contents.
+  expect(JSON.stringify(captures)).not.toMatch(/\/Users\/|\.context|[0-9a-f]{64}/);
+  const untrusted = await new Promise<number | undefined>((resolve, reject) => {
+    httpGet(`${base}/api/captures`, { headers: { Host: "untrusted.example" } }, (answer) => {
+      resolve(answer.statusCode);
+      answer.resume();
+    }).on("error", reject);
+  });
+  expect(untrusted).toBe(403);
+});
+
+it("validates Daily, coverage, and review requests before any job exists", async () => {
+  const post = (body: unknown) =>
+    fetch(`${base}/api/jobs`, { method: "POST", headers: { "Content-Type": "application/json", Origin: base }, body: JSON.stringify(body) });
+  const jobsFor = async (id: string) => (await pool.query("SELECT id FROM lab_execution_jobs WHERE id = $1", [id])).rows;
+  for (const body of [
+    { kind: "investigate", source: "daily_capture", captureId: "../20261022T050138Z-39b307" },
+    { kind: "investigate", source: "daily_capture", captureId: "latest" },
+    { kind: "investigate", source: "daily_capture", captureId: "20261022T050138Z-39b307", caseId: "no-logs" },
+    { kind: "investigate", source: "simulated", captureId: "20261022T050138Z-39b307" },
+    { kind: "coverage", runId: "not-a-uuid" },
+  ]) {
+    const requestId = randomUUID();
+    expect((await post({ requestId, ...body })).status).toBe(400);
+    expect(await jobsFor(requestId)).toEqual([]);
+  }
+  // With a worker online, admission checks the recording or run, then refuses.
+  const { createJobStore } = await import("@agent-lab/lab/jobs");
+  const jobs = createJobStore(pool);
+  const owner = randomUUID();
+  await jobs.register(owner);
+  try {
+    const unknown = randomUUID();
+    const response = await post({ requestId: unknown, kind: "investigate", source: "daily_capture", captureId: "20991231T000000Z-000000" });
+    expect(response.status).toBe(404);
+    expect((await response.json()).error.message).toBe("Capture 20991231T000000Z-000000 is not in the captures directory. Choose another recording.");
+    const coverageOfSimulated = randomUUID();
+    const refused = await post({ requestId: coverageOfSimulated, kind: "coverage", runId });
+    expect(refused.status).toBe(422);
+    expect((await refused.json()).error.message).toContain("recorded Daily investigations only");
+    const missingRun = randomUUID();
+    expect((await post({ requestId: missingRun, kind: "coverage", runId: randomUUID() })).status).toBe(404);
+    for (const id of [unknown, coverageOfSimulated, missingRun]) expect(await jobsFor(id)).toEqual([]);
+  } finally {
+    await jobs.unregister(owner);
   }
 });
