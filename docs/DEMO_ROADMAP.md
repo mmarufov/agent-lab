@@ -327,9 +327,9 @@ implemented locally. `pnpm daily:up` runs Daily's backend at a pinned commit in 
 isolated, feed-only Compose project with three fictional articles. `pnpm
 daily:capture` stops only that sandbox's PostgreSQL for 45 seconds and records
 real HTTP observations, Daily's logs, recovery, and provenance as a saved
-incident; `pnpm daily:recover` finishes a killed capture. See the README's Daily
-sandbox section. No model has seen a capture yet: investigator tools that read
-it, UI integration, and version comparisons are later steps.
+incident; `pnpm daily:recover` finishes a killed capture. No model has seen a
+capture yet: investigator tools that read it, UI integration, and version
+comparisons are later steps.
 
 October 29: the retrieval connection is implemented locally. `get_daily_logs` and
 `get_daily_http_observations` read one verified capture through Next.js, using a
